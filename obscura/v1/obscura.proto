@@ -32,9 +32,9 @@ message Envelope {
 
 message EncryptedMessage {
   enum Type {
-    UNKNOWN = 0;
-    PREKEY_MESSAGE = 1; // Initial handshake
-    ENCRYPTED_MESSAGE = 2; // Standard encrypted message
+    TYPE_UNSPECIFIED = 0;
+    TYPE_PREKEY_MESSAGE = 1; // Initial handshake
+    TYPE_ENCRYPTED_MESSAGE = 2; // Standard encrypted message
   }
   Type type = 1;
   bytes content = 2; // The actual ciphertext
