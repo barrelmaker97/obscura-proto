@@ -48,20 +48,31 @@ message SendMessageResponse {
 // The top-level frame exchanged over the WebSocket connection.
 message WebSocketFrame {
   oneof payload {
-    // Server -> Client: A new message has arrived.
-    Envelope envelope = 10;
-
     // Client -> Server: Acknowledge receipt of a message and triggers server-side deletion.
     AckMessage ack = 11;
 
     // Server -> Client: Notification that one-time pre-keys are running low.
     PreKeyStatus pre_key_status = 12;
+
+    // Server -> Client: Batch of messages delivered in a single frame.
+    EnvelopeBatch envelope_batch = 13;
   }
+}
+
+// Sent by client to confirm processing. Server deletes the message upon receipt.
+message AckMessage {
+  repeated bytes message_ids = 1; // UUIDs of the messages to acknowledge (16 bytes each).
 }
 
 message PreKeyStatus {
   int32 one_time_pre_key_count = 1;
   int32 min_threshold = 2; // The server's configured threshold
+}
+
+// A batch of envelopes for bulk message delivery over WebSocket.
+// Server -> Client: Multiple messages delivered in a single frame.
+message EnvelopeBatch {
+  repeated Envelope envelopes = 1;
 }
 
 // Represents a message waiting in the queue for the connected device.
@@ -71,9 +82,4 @@ message Envelope {
   bytes sender_id = 2;  // UUID of the sender (16 bytes).
   uint64 timestamp = 3; // Server-generated timestamp (ms) of when the message was received.
   bytes message = 4;    // The encrypted message payload
-}
-
-// Sent by client to confirm processing. Server deletes the message upon receipt.
-message AckMessage {
-  repeated bytes message_ids = 1; // UUIDs of the messages to acknowledge (16 bytes each).
 }
