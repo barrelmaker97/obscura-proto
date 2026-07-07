@@ -178,6 +178,63 @@ first.** (Historically `ModelSync` carried a `signature` field — a keyless
 
 ---
 
+## 4. Model config (schema parsing)
+
+*Vectors: [`conformance/schema.json`](conformance/schema.json).*
+
+Apps declare their models in a shared config (the `schema.ts` map). Each kit
+parses that config into its internal model definition. Because each kit parses
+independently, they can **drift** — the original bug was one kit silently
+ignoring `audience`, so a private model defaulted to a broadcast. This section
+pins the parse so all kits agree, and requires it to **fail loud** on an invalid
+definition rather than mis-parse.
+
+A model config is `{ fields, sync?, ttl?, audience? }`:
+
+### 4.1 `fields`
+
+A map of field name → type string. The type is a base type optionally suffixed
+with `?` to mark it **optional (nullable)**:
+
+| Declared | base type | optional |
+|---|---|---|
+| `"string"` | string | no |
+| `"string?"` | string | yes |
+| `"number"` / `"boolean"` / `"timestamp"` | (as named) | no |
+
+Base type MUST be one of `string`, `number`, `boolean`, `timestamp`. Any other
+base type is invalid (§4.5).
+
+### 4.2 `sync`
+
+`"gset"` or `"lww"` (see §2). **Absent → `gset`** (the default). Any other value
+is invalid.
+
+### 4.3 `ttl`
+
+Optional duration string (e.g. `"24h"`). Absent/null → no TTL.
+
+### 4.4 `audience`
+
+The delivery scope object (see §1.1): `{"kind": ...}`, optionally with `field`.
+**Absent → `friends`** (the default). `recipient`/`conversation` REQUIRE a
+non-empty `field`; `self`/`friends` take none. An unknown `kind`, or a
+`recipient`/`conversation` missing its `field`, is invalid.
+
+### 4.5 Fail-loud
+
+Any invalid definition — unknown `sync`, unknown field base type, unknown
+`audience` kind, or a `recipient`/`conversation` audience without a non-empty
+`field` — MUST raise `INVALID_SCHEMA` at define time and define no model. Failing
+loud at definition is what stops a mis-parsed config from silently degrading a
+model's confidentiality at runtime.
+
+| Code | Raised when |
+|---|---|
+| `INVALID_SCHEMA` | A model definition is invalid (see above). |
+
+---
+
 ## Changelog
 
 - **v1** — Initial spec. §1 Routing (audience modes, fail-loud rule, canonical
@@ -185,4 +242,6 @@ first.** (Historically `ModelSync` carried a `signature` field — a keyless
   §2 Merge (GSet union, LWW total order with `authorDeviceId` tie-break,
   tombstones, future-timestamp clamp), backed by `merge.json`. §3 Wire (enum ↔
   app-form mappings, round-trip; byte-canonicity deliberately out of scope;
-  `ModelSync.signature` removed), backed by `wire.json`.
+  `ModelSync.signature` removed), backed by `wire.json`. §4 Model config (field
+  types + optionality, sync/ttl/audience defaults, fail-loud `INVALID_SCHEMA`),
+  backed by `schema.json`.

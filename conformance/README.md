@@ -25,6 +25,7 @@ forces every kit to prove it still conforms.
 | `routing.json` | Delivery targeting (audience → recipients, fail-loud) | Kotlin `RoutingConformanceTest` | active |
 | `merge.json`   | CRDT merge (GSet union, LWW resolution)              | Kotlin `MergeConformanceTest` | active |
 | `wire.json`    | Canonical `ModelSync` encoding                      | Kotlin `WireConformanceTest` | active |
+| `schema.json`  | Model-config parsing (fields/sync/ttl/audience)     | Kotlin `SchemaConformanceTest` | active |
 
 ## `routing.json`
 
@@ -154,6 +155,49 @@ and `ModelSync` encode→decode round-trip (by value).
   bytes. So exact-byte assertions would over-constrain the wire for no consumer.
 
 See `ObscuraKit-Kotlin/lib/src/test/kotlin/scenarios/WireConformanceTest.kt`.
+
+## `schema.json`
+
+Pins how one model's raw config (a value in the shared `schema.ts` map) is parsed
+into the internal model definition, or the fail-loud `INVALID_SCHEMA` error for an
+invalid definition. Directly guards the divergent-parsing bug class (a kit
+ignoring `audience` so a private model broadcasts).
+
+```
+{
+  "version": 1,
+  "kind": "schema",
+  "cases": [
+    {
+      "name": "<shown as the test name>",
+      "config": { "fields": { "<name>": "<type>" }, "sync"?, "ttl"?, "audience"? },
+      "expect": {
+        "sync": "gset" | "lww",
+        "ttl": "24h" | null,
+        "audience": { "kind": "friends|self|recipient|conversation", "field": "..."|null },
+        "fields": { "<name>": { "type": "string|number|boolean|timestamp", "optional": bool } }
+      }
+      // OR, for an invalid definition:
+      "expect": { "error": "INVALID_SCHEMA" }
+    }
+  ]
+}
+```
+
+**Design decisions:**
+
+- **Consumed through the real parse entry point** (Kotlin `ModelConfig.fromWire`,
+  which `defineModelsFromJson` also calls) — so the vector guards production
+  parsing, not a reimplementation.
+- **Field type is normalized** to `{ type, optional }`: the `?` suffix means
+  optional/nullable; base type ∈ {string, number, boolean, timestamp}.
+- **Defaults are pinned:** `sync` absent → `gset`; `audience` absent → `friends`;
+  `ttl` absent → null.
+- **`error: "INVALID_SCHEMA"`** asserts fail-loud parsing (unknown sync / field
+  type / audience kind, or a `recipient`/`conversation` audience missing its
+  `field`) — see SPEC §4.5.
+
+See `ObscuraKit-Kotlin/lib/src/test/kotlin/scenarios/SchemaConformanceTest.kt`.
 
 ## Adding a case
 
