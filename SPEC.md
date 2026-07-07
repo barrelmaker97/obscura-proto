@@ -17,10 +17,13 @@ Layers:
 
 The `client` package is a distinct **layer** (client-to-client content), not a
 newer version of the `obscura.v1` transport — hence `obscura.client.v1`, where
-`v1` is a genuine version of the client contract.
+`v1` is a genuine version of the client contract. (`obscura.v1` is a legacy
+exception to this `obscura.<layer>.<version>` convention: it is really the
+*transport* layer but predates the naming. See the repo [`README`](README.md#package-naming).)
 
-All three kits (ObscuraKit-Kotlin, ObscuraKit-swift, obscura-client-web) MUST
-conform. "MUST" / "MUST NOT" are normative.
+The shipping kits — **ObscuraKit-Kotlin** and **ObscuraKit-swift** — MUST
+conform. "MUST" / "MUST NOT" are normative. (`obscura-client-web` is a throwaway
+proof-of-concept and is not a normative conformance target.)
 
 ---
 

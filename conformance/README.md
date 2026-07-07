@@ -4,9 +4,9 @@ Language-neutral test fixtures that pin the **behavior** of the client
 contract (C2/L3), the way the `.proto` files pin its **shape**. A schema can
 say a `ModelSync` has a `model`, `id`, and `timestamp`; it cannot say *who a
 write is delivered to* or *how two conflicting writes merge*. Those are
-behaviors, and behaviors drift between independently-written kits
-(ObscuraKit-Kotlin, ObscuraKit-swift, obscura-client-web) unless they are
-pinned by a shared, executable spec.
+behaviors, and behaviors drift between independently-written kits (the shipping
+kits ObscuraKit-Kotlin and ObscuraKit-swift; obscura-client-web is a throwaway
+PoC, not a normative target) unless they are pinned by a shared, executable spec.
 
 Each kit loads these files in its own test suite and asserts its
 implementation matches. A behavior change means editing the vector — which
@@ -20,12 +20,12 @@ forces every kit to prove it still conforms.
 
 ## Files
 
-| File | Behavior class | Consumes | Status |
+| File | Behavior class | Consumed by | Status |
 |---|---|---|---|
-| `routing.json` | Delivery targeting (audience → recipients, fail-loud) | Kotlin `RoutingConformanceTest` | active |
-| `merge.json`   | CRDT merge (GSet union, LWW resolution)              | Kotlin `MergeConformanceTest` | active |
-| `wire.json`    | Canonical `ModelSync` encoding                      | Kotlin `WireConformanceTest` | active |
-| `schema.json`  | Model-config parsing (fields/sync/ttl/audience)     | Kotlin `SchemaConformanceTest` | active |
+| `routing.json` | Delivery targeting (audience → recipients, fail-loud) | Kotlin + Swift | active |
+| `merge.json`   | CRDT merge (GSet union, LWW resolution)              | Kotlin + Swift | active |
+| `wire.json`    | Wire ↔ app mappings + `ModelSync` round-trip         | Kotlin + Swift | active |
+| `schema.json`  | Model-config parsing (fields/sync/ttl/audience)     | Kotlin (Swift pending) | active |
 
 ## `routing.json`
 
@@ -68,9 +68,10 @@ the fail-loud error a kit MUST raise instead of misrouting.
   `{"kind":"recipient","field":"<usernameField>"}`,
   `{"kind":"conversation","field":"<convIdField>"}`.
 
-### Consuming it (prototype: Kotlin)
+### Consuming it
 
-A harness maps the topology so `deviceId == userId` (one device per user),
+Each kit drives its real production code per case. The Kotlin harness (the first
+implemented) maps the topology so `deviceId == userId` (one device per user),
 which makes the recorded target set equal the recipient-userId set directly,
 then drives the real `SyncManager` per case:
 
@@ -82,7 +83,7 @@ val vectors = JSONObject(File("../proto/conformance/routing.json").readText())
 //   (or that ObscuraError.code == expect.error and nothing was recorded).
 ```
 
-See `ObscuraKit-Kotlin/lib/src/test/kotlin/scenarios/RoutingConformanceTest.kt`.
+Consumers: Kotlin `RoutingConformanceTest.kt`, Swift `RoutingConformanceTests.swift`.
 
 ## `merge.json`
 
@@ -126,7 +127,7 @@ identically.
   wall-clock `now`, which a static fixture cannot pin. Each kit unit-tests it
   natively. See SPEC §2.4.
 
-See `ObscuraKit-Kotlin/lib/src/test/kotlin/scenarios/MergeConformanceTest.kt`.
+Consumers: Kotlin `MergeConformanceTest.kt`, Swift `MergeConformanceTests.swift`.
 
 ## `wire.json`
 
@@ -155,7 +156,7 @@ Pins the wire ↔ app-facing-form mappings for the `ClientMessage.payload` oneof
   authenticates the payload, `data` is value-compared, and nothing hashes the
   bytes. So exact-byte assertions would over-constrain the wire for no consumer.
 
-See `ObscuraKit-Kotlin/lib/src/test/kotlin/scenarios/WireConformanceTest.kt`.
+Consumers: Kotlin `WireConformanceTest.kt`, Swift `WireConformanceTests.swift`.
 
 ## `schema.json`
 
@@ -198,7 +199,8 @@ ignoring `audience` so a private model broadcasts).
   type / audience kind, or a `recipient`/`conversation` audience missing its
   `field`) — see SPEC §4.5.
 
-See `ObscuraKit-Kotlin/lib/src/test/kotlin/scenarios/SchemaConformanceTest.kt`.
+Consumer: Kotlin `SchemaConformanceTest.kt` (Swift schema consumer pending — its
+`defineModelsFromJson` does not yet surface the `audience` field).
 
 ## Adding a case
 
