@@ -251,8 +251,10 @@ message ModelSync {
   Op op = 3;                        // Operation type
   uint64 timestamp = 4;             // Lamport timestamp for CRDT ordering
   bytes data = 5;                   // JSON-encoded model data
-  bytes signature = 6;              // sign(model + id + data + timestamp, deviceKey)
   string author_device_id = 7;      // Which device created this entry
+
+  reserved 6;                       // was `bytes signature` — a keyless SHA-256 that was
+  reserved "signature";             // never verified; Signal already authenticates the payload
 
   enum Op {
     OP_UNSPECIFIED = 0;

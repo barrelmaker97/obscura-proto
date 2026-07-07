@@ -24,7 +24,7 @@ forces every kit to prove it still conforms.
 |---|---|---|---|
 | `routing.json` | Delivery targeting (audience → recipients, fail-loud) | Kotlin `RoutingConformanceTest` | active |
 | `merge.json`   | CRDT merge (GSet union, LWW resolution)              | Kotlin `MergeConformanceTest` | active |
-| `wire.json`    | Canonical `ModelSync` encoding                      | — | planned |
+| `wire.json`    | Canonical `ModelSync` encoding                      | Kotlin `WireConformanceTest` | active |
 
 ## `routing.json`
 
@@ -126,6 +126,34 @@ identically.
   natively. See SPEC §2.4.
 
 See `ObscuraKit-Kotlin/lib/src/test/kotlin/scenarios/MergeConformanceTest.kt`.
+
+## `wire.json`
+
+Pins the enum ↔ app-facing-form mappings from the v2 client.proto renumbering,
+and `ModelSync` encode→decode round-trip (by value).
+
+```
+{
+  "version": 1,
+  "kind": "wire",
+  "messageTypes": [ { "wire": "TYPE_MODEL_SYNC", "app": "MODEL_SYNC" }, ... ],
+  "modelSyncOps": [ { "wire": "OP_CREATE", "app": "CREATE" }, ... ],
+  "signalKinds":  [ { "wire": "SIGNAL_KIND_TYPING", "app": "typing" }, ... ],
+  "roundTrip":    [ { "name", "modelSync": { model, id, op, timestamp, data } }, ... ]
+}
+```
+
+**Design decisions:**
+
+- **Mappings are the point.** Each kit consolidates them into one `WireCodec`
+  (never duplicated) and asserts wire↔app in both directions.
+- **Round-trip is by value, not bytes** — `data` is model-defined JSON; equality
+  is over the parsed map, so key order is irrelevant.
+- **No byte-canonicity.** Deliberately out of scope (SPEC §3.3): Signal already
+  authenticates the payload, `data` is value-compared, and nothing hashes the
+  bytes. So exact-byte assertions would over-constrain the wire for no consumer.
+
+See `ObscuraKit-Kotlin/lib/src/test/kotlin/scenarios/WireConformanceTest.kt`.
 
 ## Adding a case
 

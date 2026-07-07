@@ -128,11 +128,53 @@ is no more trustworthy than a local one.
 fixture cannot express deterministically, so it is verified by per-kit unit
 tests instead (e.g. Kotlin `LWWMapTest`).
 
-## 3. Wire (canonical encoding)
+## 3. Wire (encoding)
 
-*Planned — Increment 3. Will define the canonical `ModelSync` encoding,
-including how model `data` is serialized and whether/how it is canonicalized.
-Backed by `conformance/wire.json`.*
+*Vectors: [`conformance/wire.json`](conformance/wire.json).*
+
+The client content is a `ClientMessage` (`obscura/v2/client.proto`). L3 pins two
+things about it: the **enum ↔ app-facing-form mappings** (which the v2
+renumbering made non-trivial) and **round-trip preservation** of a `ModelSync`.
+
+### 3.1 Enum mappings
+
+The app never sees the `TYPE_`/`OP_`/`SIGNAL_KIND_` wire prefixes. A kit MUST map:
+
+| Wire enum | App-facing form | Rule |
+|---|---|---|
+| `ClientMessage.Type` e.g. `TYPE_MODEL_SYNC` | `"MODEL_SYNC"` | strip the `TYPE_` prefix |
+| `ModelSync.Op` e.g. `OP_CREATE` | `"CREATE"` | strip the `OP_` prefix |
+| `SignalKind` e.g. `SIGNAL_KIND_TYPING` | `"typing"` | mapped name (see table) |
+
+`*_UNSPECIFIED` (and any unrecognized value) decodes to the safe default:
+`Op` → `CREATE`; `SignalKind` → ignored. These mappings MUST live in one place
+per kit (a `WireCodec`), never duplicated, so they cannot drift within a kit.
+
+### 3.2 Round-trip
+
+`encode(ModelSync) → decode` MUST preserve `model`, `id`, `op`, `timestamp`, and
+the `data` **value**. `data` is model-defined JSON carried in a proto `bytes`
+field; equality is by parsed value, so key order is irrelevant.
+
+### 3.3 What is deliberately NOT specified: byte-canonicity
+
+There is intentionally **no canonical byte encoding**. Neither the inner `data`
+JSON nor proto3 serialization is guaranteed byte-identical across
+languages/libraries, and nothing needs it to be:
+
+- **Signal (L2) already authenticates and integrity-protects the whole
+  `ClientMessage`.** Sender authenticity and tamper-evidence are provided by the
+  encryption layer, over the payload regardless of byte order.
+- `data` is **parsed into a map and compared by value**, never by bytes.
+- Dedup is by entry `id`; the transport idempotency key is computed by the
+  sender over its own outgoing bytes and never needs cross-device reproducibility.
+
+Byte-canonicity would only matter if an app-level signature verification or
+content-addressing were introduced. It is not, so pinning exact bytes would
+constrain the wire for a property nothing consumes. **If such a feature is ever
+added, a canonical `data` encoding (e.g. sorted-key JSON) must be defined
+first.** (Historically `ModelSync` carried a `signature` field — a keyless
+`SHA-256` that was never verified; it has been removed as redundant with Signal.)
 
 ---
 
@@ -141,4 +183,6 @@ Backed by `conformance/wire.json`.*
 - **v1** — Initial spec. §1 Routing (audience modes, fail-loud rule, canonical
   `conversationId`, `DIRECT_ROUTING_UNRESOLVED`), backed by `routing.json`.
   §2 Merge (GSet union, LWW total order with `authorDeviceId` tie-break,
-  tombstones, future-timestamp clamp), backed by `merge.json`. §3 wire scaffolded.
+  tombstones, future-timestamp clamp), backed by `merge.json`. §3 Wire (enum ↔
+  app-form mappings, round-trip; byte-canonicity deliberately out of scope;
+  `ModelSync.signature` removed), backed by `wire.json`.
