@@ -23,7 +23,7 @@ forces every kit to prove it still conforms.
 | File | Behavior class | Consumes | Status |
 |---|---|---|---|
 | `routing.json` | Delivery targeting (audience → recipients, fail-loud) | Kotlin `RoutingConformanceTest` | active |
-| `merge.json`   | CRDT merge (GSet union, LWW resolution)              | — | planned |
+| `merge.json`   | CRDT merge (GSet union, LWW resolution)              | Kotlin `MergeConformanceTest` | active |
 | `wire.json`    | Canonical `ModelSync` encoding                      | — | planned |
 
 ## `routing.json`
@@ -82,6 +82,50 @@ val vectors = JSONObject(File("../proto/conformance/routing.json").readText())
 ```
 
 See `ObscuraKit-Kotlin/lib/src/test/kotlin/scenarios/RoutingConformanceTest.kt`.
+
+## `merge.json`
+
+Pins CRDT merge resolution. Each case applies a list of `ops` (incoming syncs)
+and asserts the resolved state; cases with multiple `applyOrders` assert
+**convergence** — the same ops in different arrival orders MUST resolve
+identically.
+
+```
+{
+  "version": 1,
+  "kind": "merge",
+  "cases": [
+    {
+      "name": "<shown as the test name, suffixed with [order]>",
+      "sync": "gset" | "lww",
+      "ops": [ { "id", "ts", "authorDeviceId", "data": { ... } }, ... ],
+      "applyOrders": ["forward", "reverse"],   // optional, default ["forward"]
+      "expect": {
+        "entries": [
+          { "id", "authorDeviceId"?, "data"?, "deleted"? },   // assert only the present fields
+          ...
+        ]
+      }
+    }
+  ]
+}
+```
+
+**Design decisions:**
+
+- **Convergence is the headline property.** `applyOrders` replays the same ops
+  forward and reversed; both must match `expect`. This is what catches a
+  non-deterministic tie-break (which passes single-order tests but corrupts
+  state across replicas).
+- **Ops are applied via the merge (incoming-sync) path**, since that is where
+  reconciliation happens and where bugs hide.
+- **`expect.entries` asserts only the fields present** per entry: `data` and/or
+  `authorDeviceId` for the winner, or `deleted: true` for a tombstone.
+- **The future-timestamp clamp is intentionally NOT here** — it is relative to
+  wall-clock `now`, which a static fixture cannot pin. Each kit unit-tests it
+  natively. See SPEC §2.4.
+
+See `ObscuraKit-Kotlin/lib/src/test/kotlin/scenarios/MergeConformanceTest.kt`.
 
 ## Adding a case
 

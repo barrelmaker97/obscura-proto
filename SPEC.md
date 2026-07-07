@@ -77,10 +77,56 @@ so vectors and cross-platform error handling can match on it.
 
 ## 2. Merge (CRDT resolution)
 
-*Planned — Increment 2. Will define GSet union semantics, LWW timestamp
-resolution and the tie-break rule for equal timestamps, tombstone
-representation (`_deleted`), and the future-timestamp clamp. Backed by
-`conformance/merge.json`.*
+*Vectors: [`conformance/merge.json`](conformance/merge.json).*
+
+A model's `sync` strategy decides how concurrent writes to the same entry `id`
+reconcile. Merge MUST be **convergent**: applying the same set of writes in any
+arrival order yields the identical resolved state. `merge.json` enforces this by
+replaying each case in multiple `applyOrders`.
+
+### 2.1 GSet (grow-only set) — `sync: "gset"`
+
+Union keyed by entry `id`. The first write seen for an `id` is kept; later
+writes with the same `id` are ignored (idempotent). GSet entries are immutable
+by construction (ids are unique: `model_timestamp_random`), so a repeated `id`
+carries identical content and order cannot matter.
+
+### 2.2 LWW (last-writer-wins map) — `sync: "lww"`
+
+Each `id` resolves to the winner under a **total order on
+`(timestamp, authorDeviceId)`**:
+
+1. Strictly-greater `timestamp` wins.
+2. On an **equal** `timestamp`, the lexicographically-**higher** `authorDeviceId`
+   wins.
+3. Equal `timestamp` **and** equal `authorDeviceId` is the same logical write —
+   idempotent, the existing entry is kept.
+
+The `authorDeviceId` tie-break (2) is mandatory: without it, an equal-timestamp
+conflict resolves to "whichever write arrived first", so two devices that
+receive the two writes in different orders converge to **different** states and
+never reconcile. That silently corrupts state and is invisible in single-device
+testing — hence it is pinned by a multi-order vector.
+
+### 2.3 Tombstones (delete)
+
+A delete is a normal LWW write whose `data` is `{ "_deleted": true }`, stamped
+at the deleting device's current time. Because it is an ordinary write, it
+participates in the §2.2 total order: a newer write (edit or delete) wins, and a
+stale write can never resurrect a newer tombstone. `getAll`/`size` exclude
+tombstones; `get` returns them.
+
+### 2.4 Future-timestamp clamp
+
+An incoming `timestamp` more than **60s** beyond local wall-clock is clamped to
+`now + 60s` before it participates in §2.2, so a spoofed far-future timestamp
+cannot win every future conflict forever. The clamp applies on **both** the
+local-write and the incoming-sync (merge) paths — a timestamp arriving over sync
+is no more trustworthy than a local one.
+
+*Not vector-tested:* the clamp is relative to wall-clock `now`, which a static
+fixture cannot express deterministically, so it is verified by per-kit unit
+tests instead (e.g. Kotlin `LWWMapTest`).
 
 ## 3. Wire (canonical encoding)
 
@@ -94,4 +140,5 @@ Backed by `conformance/wire.json`.*
 
 - **v1** — Initial spec. §1 Routing (audience modes, fail-loud rule, canonical
   `conversationId`, `DIRECT_ROUTING_UNRESOLVED`), backed by `routing.json`.
-  §2/§3 scaffolded.
+  §2 Merge (GSet union, LWW total order with `authorDeviceId` tie-break,
+  tombstones, future-timestamp clamp), backed by `merge.json`. §3 wire scaffolded.
