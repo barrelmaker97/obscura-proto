@@ -12,9 +12,9 @@ and pins the third (behavior) with prose + vectors.
 
 | Layer | Artifact | Who speaks it |
 |---|---|---|
-| **L1 — transport** | [`obscura/v1/obscura.proto`](obscura/v1/obscura.proto) | server ⇄ kits: the envelope the server routes. Its encrypted `content` is opaque to the server. |
-| **L2 — client content** | [`obscura/client/v1/client.proto`](obscura/client/v1/client.proto) | kit ⇄ kit: the E2E payload *inside* `content`. The server never parses it. |
-| **L3 — semantics** | [`SPEC.md`](SPEC.md) + [`conformance/`](conformance/) | how kits **behave**: routing, CRDT merge, wire mapping, schema parsing. |
+| **Transport** | [`obscura/v1/obscura.proto`](obscura/v1/obscura.proto) | server ⇄ kits: the envelope the server routes. Its encrypted `content` is opaque to the server. |
+| **Content** | [`obscura/client/v1/client.proto`](obscura/client/v1/client.proto) | kit ⇄ kit: the E2E payload *inside* `content`. The server never parses it. |
+| **Semantics** | [`SPEC.md`](SPEC.md) + [`conformance/`](conformance/) | how kits **behave**: routing, CRDT merge, wire mapping, schema parsing. |
 
 The protos pin the **shape**; `SPEC.md` and the vectors pin the **behavior**.
 Where a rule is testable, the vector is the authority and `SPEC.md` explains
@@ -27,8 +27,8 @@ suffix is a genuine version (`buf`'s `STANDARD` lint requires a version suffix).
 A breaking redesign of a layer is a real version bump (`…v1` → `…v2`), never a
 new layer name.
 
-- **`obscura.client.v1`** — the L2 client-content layer.
-- **`obscura.v1`** — *legacy exception.* This is the L1 **transport** layer; by
+- **`obscura.client.v1`** — the client-content layer.
+- **`obscura.v1`** — *legacy exception.* This is the **transport** layer; by
   the convention it would be `obscura.transport.v1`, but it predates the
   convention and is consumed by `obscura-server`, so it is left as-is until a
   coordinated server change can rename it. Read `obscura.v1` as "transport", not
@@ -38,15 +38,15 @@ new layer name.
 
 | Repo | Role | Consumes |
 |---|---|---|
-| `obscura-server` | zero-knowledge relay | L1 |
-| `ObscuraKit-Kotlin` | Android kit | L1 + L2 + L3 |
-| `ObscuraKit-swift` | iOS/macOS kit | L1 + L2 + L3 |
+| `obscura-server` | zero-knowledge relay | transport |
+| `ObscuraKit-Kotlin` | Android kit | transport + content + semantics |
+| `ObscuraKit-swift` | iOS/macOS kit | transport + content + semantics |
 | `obscura-client-web` | throwaway PoC (non-shipping) | — |
 
 Each shipping consumer pins this repo as a git submodule and generates code from
-the `.proto` files; the kits additionally run the L3 vectors in their own test
-suites. `obscura-client-web` is a proof-of-concept and is **not** a normative
-conformance target.
+the `.proto` files; the kits additionally run the behavior (semantics) vectors in
+their own test suites. `obscura-client-web` is a proof-of-concept and is **not** a
+normative conformance target.
 
 ## Working here
 
@@ -66,12 +66,12 @@ conformance target.
 
 ```
 obscura/
-  v1/obscura.proto          # L1 transport (server ⇄ kits)
-  client/v1/client.proto    # L2 client content (kit ⇄ kit)
+  v1/obscura.proto          # transport layer (server ⇄ kits)
+  client/v1/client.proto    # client content (kit ⇄ kit)
 conformance/
-  *.json                    # L3 behavior vectors
+  *.json                    # behavior vectors
   validate.py               # upstream well-formedness gate
   README.md                 # vector formats + rationale
-SPEC.md                     # L3 prose contract
+SPEC.md                     # behavior (semantics) prose contract
 buf.yaml                    # lint STANDARD + breaking FILE
 ```

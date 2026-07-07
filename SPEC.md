@@ -8,12 +8,12 @@ the vectors pin its **behavior**. Where a rule is testable, it is backed by a
 conformance vector and that vector is the authority — this document explains
 *why*.
 
-Scope: the C2 (kit ↔ kit) contract — the E2E payload the server never sees.
+Scope: the client-to-client (kit ↔ kit) contract — the E2E payload the server never sees.
 Layers:
 
-- **L1 transport** — `obscura/v1/obscura.proto`. Server + kits. Out of scope here.
-- **L2 content** — `obscura/client/v1/client.proto`. The message shapes.
-- **L3 semantics** — this document. What the content *means* and how kits act on it.
+- **Transport** — `obscura/v1/obscura.proto`. Server + kits. Out of scope here.
+- **Content** — `obscura/client/v1/client.proto`. The message shapes.
+- **Semantics** — this document. What the content *means* and how kits act on it.
 
 The `client` package is a distinct **layer** (client-to-client content), not a
 newer version of the `obscura.v1` transport — hence `obscura.client.v1`, where
@@ -139,8 +139,8 @@ tests instead (e.g. Kotlin `LWWMapTest`).
 
 *Vectors: [`conformance/wire.json`](conformance/wire.json).*
 
-The client content is a `ClientMessage` (`obscura/client/v1/client.proto`). L3
-pins two things about it: the **wire ↔ app-facing-form mappings** (the message
+The client content is a `ClientMessage` (`obscura/client/v1/client.proto`). This
+section pins two things about it: the **wire ↔ app-facing-form mappings** (the message
 kind and the two remaining enums) and **round-trip preservation** of a
 `ModelSync`.
 
@@ -178,7 +178,7 @@ There is intentionally **no canonical byte encoding**. Neither the inner `data`
 JSON nor proto3 serialization is guaranteed byte-identical across
 languages/libraries, and nothing needs it to be:
 
-- **Signal (L2) already authenticates and integrity-protects the whole
+- **Signal already authenticates and integrity-protects the whole
   `ClientMessage`.** Sender authenticity and tamper-evidence are provided by the
   encryption layer, over the payload regardless of byte order.
 - `data` is **parsed into a map and compared by value**, never by bytes.

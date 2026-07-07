@@ -1,7 +1,7 @@
 # Conformance vectors
 
 Language-neutral test fixtures that pin the **behavior** of the client
-contract (C2/L3), the way the `.proto` files pin its **shape**. A schema can
+contract (client-to-client), the way the `.proto` files pin its **shape**. A schema can
 say a `ModelSync` has a `model`, `id`, and `timestamp`; it cannot say *who a
 write is delivered to* or *how two conflicting writes merge*. Those are
 behaviors, and behaviors drift between independently-written kits (the shipping

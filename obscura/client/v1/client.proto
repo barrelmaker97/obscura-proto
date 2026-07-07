@@ -1,6 +1,6 @@
 // Obscura client content protocol (v1)
 //
-// The message layer for client-to-client (C2) communication: the payload
+// The message format for client-to-client communication: the payload
 // carried inside EncryptedMessage.content, which the zero-knowledge server
 // never parses. This is a distinct *layer* from the server transport
 // (obscura/v1/obscura.proto), not a newer version of it — hence the
