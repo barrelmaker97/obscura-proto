@@ -1,12 +1,12 @@
 {
   "version": 1,
   "kind": "wire",
-  "description": "L3 wire mapping + round-trip conformance. Pins the enum <-> app-facing-form mappings introduced by the v2 client.proto enum renumbering (TYPE_/OP_/SIGNAL_KIND_ prefixes, moving TEXT/CREATE off wire-0), and that a ModelSync round-trips (encode -> decode) preserving its VALUE. Byte-canonicity is intentionally NOT tested: see obscura-proto SPEC 3 — the data payload is opaque JSON, parsed not byte-compared, and Signal already authenticates the whole message, so reproducible bytes buy nothing here.",
+  "description": "L3 wire mapping + round-trip conformance. Pins the wire <-> app-facing-form mappings: the ClientMessage 'payload' oneof arm (which IS the message-type discriminator) -> app type string, plus the ModelSync.Op and SignalKind enum mappings (OP_/SIGNAL_KIND_ prefixes, CREATE moved off wire-0), and that a ModelSync round-trips (encode -> decode) preserving its VALUE. In 'messageTypes', 'wire' is the oneof field name (language-neutral); each kit binds it to its generated payload case. Byte-canonicity is intentionally NOT tested: see obscura-proto SPEC 3 — the data payload is opaque JSON, parsed not byte-compared, and Signal already authenticates the whole message, so reproducible bytes buy nothing here.",
   "messageTypes": [
-    { "wire": "TYPE_TEXT", "app": "TEXT" },
-    { "wire": "TYPE_FRIEND_REQUEST", "app": "FRIEND_REQUEST" },
-    { "wire": "TYPE_MODEL_SYNC", "app": "MODEL_SYNC" },
-    { "wire": "TYPE_MODEL_SIGNAL", "app": "MODEL_SIGNAL" }
+    { "wire": "text", "app": "TEXT" },
+    { "wire": "friend_request", "app": "FRIEND_REQUEST" },
+    { "wire": "model_sync", "app": "MODEL_SYNC" },
+    { "wire": "model_signal", "app": "MODEL_SIGNAL" }
   ],
   "modelSyncOps": [
     { "wire": "OP_CREATE", "app": "CREATE" },

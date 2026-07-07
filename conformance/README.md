@@ -130,14 +130,15 @@ See `ObscuraKit-Kotlin/lib/src/test/kotlin/scenarios/MergeConformanceTest.kt`.
 
 ## `wire.json`
 
-Pins the enum ↔ app-facing-form mappings from the v2 client.proto renumbering,
-and `ModelSync` encode→decode round-trip (by value).
+Pins the wire ↔ app-facing-form mappings for the `ClientMessage.payload` oneof
+(the message kind) and the `ModelSync.Op` / `SignalKind` enums, plus a
+`ModelSync` encode→decode round-trip (by value).
 
 ```
 {
   "version": 1,
   "kind": "wire",
-  "messageTypes": [ { "wire": "TYPE_MODEL_SYNC", "app": "MODEL_SYNC" }, ... ],
+  "messageTypes": [ { "wire": "model_sync", "app": "MODEL_SYNC" }, ... ],
   "modelSyncOps": [ { "wire": "OP_CREATE", "app": "CREATE" }, ... ],
   "signalKinds":  [ { "wire": "SIGNAL_KIND_TYPING", "app": "typing" }, ... ],
   "roundTrip":    [ { "name", "modelSync": { model, id, op, timestamp, data } }, ... ]
