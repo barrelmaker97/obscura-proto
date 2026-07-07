@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "kind": "wire",
+  "description": "L3 wire mapping + round-trip conformance. Pins the enum <-> app-facing-form mappings introduced by the v2 client.proto enum renumbering (TYPE_/OP_/SIGNAL_KIND_ prefixes, moving TEXT/CREATE off wire-0), and that a ModelSync round-trips (encode -> decode) preserving its VALUE. Byte-canonicity is intentionally NOT tested: see obscura-proto SPEC 3 — the data payload is opaque JSON, parsed not byte-compared, and Signal already authenticates the whole message, so reproducible bytes buy nothing here.",
+  "messageTypes": [
+    { "wire": "TYPE_TEXT", "app": "TEXT" },
+    { "wire": "TYPE_FRIEND_REQUEST", "app": "FRIEND_REQUEST" },
+    { "wire": "TYPE_MODEL_SYNC", "app": "MODEL_SYNC" },
+    { "wire": "TYPE_MODEL_SIGNAL", "app": "MODEL_SIGNAL" }
+  ],
+  "modelSyncOps": [
+    { "wire": "OP_CREATE", "app": "CREATE" },
+    { "wire": "OP_UPDATE", "app": "UPDATE" },
+    { "wire": "OP_DELETE", "app": "DELETE" }
+  ],
+  "signalKinds": [
+    { "wire": "SIGNAL_KIND_TYPING", "app": "typing" },
+    { "wire": "SIGNAL_KIND_STOPPED_TYPING", "app": "stoppedTyping" },
+    { "wire": "SIGNAL_KIND_READ", "app": "read" }
+  ],
+  "roundTrip": [
+    {
+      "name": "ModelSync CREATE round-trips preserving model, id, op, timestamp, and data",
+      "modelSync": {
+        "model": "story",
+        "id": "story_1706389200_abc",
+        "op": "CREATE",
+        "timestamp": 1706389200000,
+        "data": { "content": "hi", "authorUsername": "me" }
+      }
+    },
+    {
+      "name": "ModelSync data round-trips by VALUE regardless of key order (not bytes)",
+      "modelSync": {
+        "model": "pix",
+        "id": "pix_1706389200_def",
+        "op": "UPDATE",
+        "timestamp": 1706389200001,
+        "data": { "z_last": "1", "a_first": "2", "conversationId": "uA_uB" }
+      }
+    },
+    {
+      "name": "ModelSync DELETE (tombstone) round-trips with its op and routing data intact",
+      "modelSync": {
+        "model": "pix",
+        "id": "pix_1706389200_ghi",
+        "op": "DELETE",
+        "timestamp": 1706389200002,
+        "data": { "conversationId": "uA_uB", "_deleted": true }
+      }
+    }
+  ]
+}
