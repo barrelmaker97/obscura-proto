@@ -1,11 +1,17 @@
-// Obscura v2 Client Protocol
-// Unified client-to-client message format for all v2 operations.
-// This is the payload inside EncryptedMessage.content - server never sees it.
+// Obscura client content protocol (v1)
 //
-// See: docs/protocol-spec.md, docs/identity.md
+// The message format for client-to-client communication: the payload
+// carried inside EncryptedMessage.content, which the zero-knowledge server
+// never parses. This is a distinct *layer* from the server transport
+// (obscura/v1/obscura.proto), not a newer version of it — hence the
+// `obscura.client.v1` package (layer = client, version = v1). A future
+// breaking client-contract change becomes a genuine `obscura.client.v2`.
+//
+// Behavioral contract: see SPEC.md and the conformance/ vectors at the repo
+// root. The protos pin the message *shape*; SPEC.md + vectors pin behavior.
 
 syntax = "proto3";
-package obscura.v2;
+package obscura.client.v1;
 
 // =============================================================================
 // Signal Protocol Envelope (client-side, opaque to server)
@@ -24,89 +30,84 @@ message EncryptedMessage {
 
 // =============================================================================
 // Main Message Wrapper
+//
+// Exactly one payload is set; the payload's field *is* the message-type
+// discriminator (there is no separate type enum to keep in sync). "Which
+// oneof arm is set" answers "what kind of message is this" — a mismatch
+// between kind and content is unrepresentable by construction.
 // =============================================================================
 
 message ClientMessage {
-  Type type = 1;
+  // Reserved: v2 carried a parallel `Type type = 1` discriminator enum plus a
+  // flat field space (mime_type=11, display_duration=12, attachment_id=15,
+  // attachment_expires=16). The discriminator is replaced by the `payload`
+  // oneof; the loose scalars are folded into their payload sub-messages.
+  reserved 1, 11, 12, 15, 16;
+  reserved "type";
+
   uint64 timestamp = 2;
 
-  // Base messaging
-  string text = 10;
-  string mime_type = 11;
-  uint32 display_duration = 12;
+  oneof payload {
+    // Base messaging
+    TextMessage text = 10;
 
-  // Attachment reference (replaces inline image_data)
-  string attachment_id = 15;
-  uint64 attachment_expires = 16;
+    // Friend request / response
+    FriendRequest friend_request = 20;
+    FriendResponse friend_response = 21;
 
-  // Friend request/response
-  string username = 20;
-  bool accepted = 21;
+    // Session reset
+    SessionReset session_reset = 25;
 
-  // Session reset
-  string reset_reason = 25;
+    // Device management
+    DeviceLinkApproval device_link_approval = 30;
+    DeviceAnnounce device_announce = 31;
+    DeviceRecoveryAnnounce device_recovery_announce = 32;
 
-  // Device management payloads
-  DeviceLinkApproval device_link_approval = 30;
-  DeviceAnnounce device_announce = 31;
-  DeviceRecoveryAnnounce device_recovery_announce = 32;
+    // Sync (new device onboarding)
+    HistoryChunk history_chunk = 40;
+    SettingsSync settings_sync = 41;
+    ReadSync read_sync = 42;
+    SyncBlob sync_blob = 43;
+    SentSync sent_sync = 44;
+    ContentReference content_reference = 45;
+    ChunkedContentReference chunked_content_reference = 46;
+    SyncRequest sync_request = 47;
 
-  // Sync payloads (for new device onboarding)
-  HistoryChunk history_chunk = 40;
-  bytes settings_data = 41;
-  string read_message_id = 42;
-  SyncBlob sync_blob = 43;
-  SentSync sent_sync = 44;
-
-  // Attachment reference (E2E encrypted key sharing)
-  ContentReference content_reference = 45;
-
-  // Chunked attachment reference (for large files)
-  ChunkedContentReference chunked_content_reference = 46;
-
-  enum Type {
-    TYPE_UNSPECIFIED = 0;
-
-    // Base messaging (0-9)
-    TYPE_IMAGE = 1;
-    TYPE_FRIEND_REQUEST = 2;
-    TYPE_FRIEND_RESPONSE = 3;
-    TYPE_SESSION_RESET = 4;
-    TYPE_VIDEO = 5;
-    TYPE_AUDIO = 6;
-    TYPE_FILE = 7;  // Generic file attachment
-    TYPE_TEXT = 8;  // Was 0; renumbered so 0 can be TYPE_UNSPECIFIED
-
-    // Device management (10-19)
-    // Note: 10 intentionally skipped - link "request" is out-of-band (QR/link code)
-    TYPE_DEVICE_LINK_APPROVAL = 11;
-    TYPE_DEVICE_ANNOUNCE = 12;
-    TYPE_DEVICE_RECOVERY_ANNOUNCE = 13;  // Account recovery - replaces all old devices
-
-    // Sync (20-29)
-    TYPE_HISTORY_CHUNK = 20;
-    TYPE_SETTINGS_SYNC = 21;
-    TYPE_READ_SYNC = 22;
-    TYPE_SYNC_BLOB = 23;      // Full state transfer (gzipped JSON)
-    TYPE_SENT_SYNC = 24;      // Notify own devices of sent message
-    TYPE_CONTENT_REFERENCE = 25;  // E2E encrypted attachment key sharing
-    TYPE_SYNC_REQUEST = 26;   // Request full sync from another device
-    TYPE_FRIEND_SYNC = 27;    // Sync friend changes to own devices
-    TYPE_CHUNKED_CONTENT_REFERENCE = 28;  // Large file (chunked attachment)
-
-    // ORM Layer (30-39)
-    TYPE_MODEL_SYNC = 30;     // CRDT model operation (create/update/delete)
-    TYPE_MODEL_SIGNAL = 31;   // Ephemeral signal (typing, read receipt) — not persisted
+    // ORM layer (Level 3)
+    ModelSync model_sync = 50;
+    FriendSync friend_sync = 51;
+    ModelSignal model_signal = 52;
   }
+}
 
-  // ORM Layer payload
-  ModelSync model_sync = 50;
+// =============================================================================
+// Base messaging payloads
+// =============================================================================
 
-  // Ephemeral signal payload (typing, read receipts, presence)
-  ModelSignal model_signal = 52;
+// A human-authored message: plain text, with an optional media caption hint
+// and a view-once display duration. Real media/attachments travel as a
+// ContentReference or ChunkedContentReference; large model state travels as a
+// ModelSync.
+message TextMessage {
+  string text = 1;              // Message body
+  string mime_type = 2;         // Optional media-kind hint for an inline caption
+  uint32 display_duration = 3;  // View-once seconds; 0 = persistent
+}
 
-  // Friend sync payload
-  FriendSync friend_sync = 51;
+// Ask to become friends with `username`.
+message FriendRequest {
+  string username = 1;
+}
+
+// Answer a friend request.
+message FriendResponse {
+  string username = 1;
+  bool accepted = 2;            // true = accepted, false = declined
+}
+
+// Tear down the Signal session with the peer (e.g. after a key change).
+message SessionReset {
+  string reason = 1;            // Human-readable reason (diagnostic only)
 }
 
 // =============================================================================
@@ -121,8 +122,8 @@ message DeviceInfo {
   bytes signal_identity_key = 4;    // Signal identity public key (33 bytes with 0x05 prefix)
 }
 
-// Sent from existing device to new device to complete linking
-// Per identity.md: transfers P2P identity, device list, and optionally data exports
+// Sent from existing device to new device to complete linking.
+// Transfers the P2P identity, device list, and optionally data exports.
 message DeviceLinkApproval {
   bytes p2p_public_key = 1;         // P2P identity public key (33 bytes - Curve25519 with prefix)
   bytes p2p_private_key = 2;        // P2P identity private key (32 bytes) - transferred securely
@@ -134,8 +135,8 @@ message DeviceLinkApproval {
   bytes trusted_ids_export = 8;     // Serialized trusted identities (optional)
 }
 
-// Broadcast to all friends when device list changes
-// Per identity.md: LWW semantics - latest timestamp wins
+// Broadcast to all friends when device list changes.
+// LWW semantics - latest timestamp wins.
 message DeviceAnnounce {
   repeated DeviceInfo devices = 1;  // Current complete device list (replaces old list)
   uint64 timestamp = 2;             // For LWW merge (latest wins)
@@ -144,9 +145,9 @@ message DeviceAnnounce {
   bytes recovery_public_key = 5;    // For friend to verify future revocation signatures
 }
 
-// Account recovery announcement
-// Sent to friends when recovering from backup
-// Signed with recovery key to prove legitimacy
+// Account recovery announcement.
+// Sent to friends when recovering from backup; signed with recovery key to
+// prove legitimacy.
 message DeviceRecoveryAnnounce {
   repeated DeviceInfo new_devices = 1;  // New device list (just the recovery device)
   uint64 timestamp = 2;
@@ -174,23 +175,35 @@ message MessageEntry {
   bytes signature = 5;              // sign(message_id + timestamp + content, device_key)
 }
 
-// Full state transfer blob (gzipped JSON)
-// Sent from existing device to new device after link approval
+// Opaque serialized settings blob, synced to the account's own devices.
+message SettingsSync {
+  bytes settings_data = 1;
+}
+
+// Mark a message read, synced to the account's own devices.
+message ReadSync {
+  string read_message_id = 1;
+}
+
+// Full state transfer blob (gzipped JSON).
+// Sent from existing device to new device after link approval.
 message SyncBlob {
   bytes compressed_data = 1;        // gzip(JSON.stringify({ friends, messages, settings }))
 }
 
-// Notify own devices of sent message (for incremental sync)
-// Sent to all own devices when a message is sent to a friend
+// Request a full state push from another own device.
+message SyncRequest {}
+
+// Notify own devices of a message just sent to a friend (for incremental sync).
 message SentSync {
-  string conversation_id = 1;       // Friend username (who the message was sent to)
+  string recipient_username = 1;    // The friend the message was sent to (own-device echo)
   string message_id = 2;            // Unique message ID
   uint64 timestamp = 3;             // When the message was sent
   bytes content = 4;                // The message content
 }
 
-// Sync friend list changes to own devices
-// Sent to all own devices when friend is added or removed
+// Sync friend list changes to own devices.
+// Sent to all own devices when a friend is added or removed.
 message FriendSync {
   string username = 1;              // Friend's username
   string action = 2;                // "add" or "remove"
@@ -203,10 +216,9 @@ message FriendSync {
 // Attachments (E2E Encrypted)
 // =============================================================================
 
-// Reference to an encrypted attachment
-// The blob is encrypted with AES-256-GCM before upload.
-// This message carries the key to recipients via Signal encryption.
-// Upload once, share key to many.
+// Reference to an encrypted attachment.
+// The blob is encrypted with AES-256-GCM before upload. This message carries
+// the key to recipients via Signal encryption. Upload once, share key to many.
 message ContentReference {
   string attachment_id = 1;         // Server attachment ID
   bytes content_key = 2;            // AES-256-GCM key (32 bytes)
@@ -217,8 +229,8 @@ message ContentReference {
   string file_name = 7;             // Original filename for file attachments
 }
 
-// Reference to a chunked large file (>950KB, up to 100MB)
-// Each chunk is encrypted separately with its own key
+// Reference to a chunked large file (>950KB, up to 100MB).
+// Each chunk is encrypted separately with its own key.
 message ChunkedContentReference {
   string file_id = 1;               // Unique ID for the entire file
   repeated ChunkInfo chunks = 2;    // Ordered list of chunk references
@@ -242,9 +254,9 @@ message ChunkInfo {
 // ORM Layer (Level 3)
 // =============================================================================
 
-// CRDT model sync operation
-// Sent between devices to synchronize model state (stories, streaks, etc.)
-// Uses existing fan-out + self-sync patterns from Level 2
+// CRDT model sync operation.
+// Sent between devices to synchronize model state (stories, streaks, etc.).
+// Uses the existing fan-out + self-sync patterns from Level 2.
 message ModelSync {
   string model = 1;                 // Model name: "story", "streak", "settings"
   string id = 2;                    // Entry ID: "story_1706389200_abc123"

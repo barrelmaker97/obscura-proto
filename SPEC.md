@@ -8,15 +8,22 @@ the vectors pin its **behavior**. Where a rule is testable, it is backed by a
 conformance vector and that vector is the authority — this document explains
 *why*.
 
-Scope: the C2 (kit ↔ kit) contract — the E2E payload the server never sees.
+Scope: the client-to-client (kit ↔ kit) contract — the E2E payload the server never sees.
 Layers:
 
-- **L1 transport** — `obscura/v1/obscura.proto`. Server + kits. Out of scope here.
-- **L2 content** — `obscura/v2/client.proto`. The message shapes.
-- **L3 semantics** — this document. What the content *means* and how kits act on it.
+- **Transport** — `obscura/v1/obscura.proto`. Server + kits. Out of scope here.
+- **Content** — `obscura/client/v1/client.proto`. The message shapes.
+- **Semantics** — this document. What the content *means* and how kits act on it.
 
-All three kits (ObscuraKit-Kotlin, ObscuraKit-swift, obscura-client-web) MUST
-conform. "MUST" / "MUST NOT" are normative.
+The `client` package is a distinct **layer** (client-to-client content), not a
+newer version of the `obscura.v1` transport — hence `obscura.client.v1`, where
+`v1` is a genuine version of the client contract. (`obscura.v1` is a legacy
+exception to this `obscura.<layer>.<version>` convention: it is really the
+*transport* layer but predates the naming. See the repo [`README`](README.md#package-naming).)
+
+The shipping kits — **ObscuraKit-Kotlin** and **ObscuraKit-swift** — MUST
+conform. "MUST" / "MUST NOT" are normative. (`obscura-client-web` is a throwaway
+proof-of-concept and is not a normative conformance target.)
 
 ---
 
@@ -132,23 +139,32 @@ tests instead (e.g. Kotlin `LWWMapTest`).
 
 *Vectors: [`conformance/wire.json`](conformance/wire.json).*
 
-The client content is a `ClientMessage` (`obscura/v2/client.proto`). L3 pins two
-things about it: the **enum ↔ app-facing-form mappings** (which the v2
-renumbering made non-trivial) and **round-trip preservation** of a `ModelSync`.
+The client content is a `ClientMessage` (`obscura/client/v1/client.proto`). This
+section pins two things about it: the **wire ↔ app-facing-form mappings** (the message
+kind and the two remaining enums) and **round-trip preservation** of a
+`ModelSync`.
 
-### 3.1 Enum mappings
+### 3.1 Message kind and enum mappings
 
-The app never sees the `TYPE_`/`OP_`/`SIGNAL_KIND_` wire prefixes. A kit MUST map:
+The message kind is the `ClientMessage.payload` **oneof**: exactly one arm is
+set, and *which* arm is set is the message type — there is no separate `Type`
+enum to keep in sync (a kind/content mismatch is unrepresentable). The app-facing
+type string is the oneof field name upper-snake-cased (`text` → `"TEXT"`,
+`model_sync` → `"MODEL_SYNC"`).
 
-| Wire enum | App-facing form | Rule |
+The app never sees the `OP_`/`SIGNAL_KIND_` wire prefixes on the two enums that
+remain. A kit MUST map:
+
+| Wire form | App-facing form | Rule |
 |---|---|---|
-| `ClientMessage.Type` e.g. `TYPE_MODEL_SYNC` | `"MODEL_SYNC"` | strip the `TYPE_` prefix |
+| `ClientMessage.payload` arm e.g. `model_sync` | `"MODEL_SYNC"` | oneof field name, upper-snake |
 | `ModelSync.Op` e.g. `OP_CREATE` | `"CREATE"` | strip the `OP_` prefix |
 | `SignalKind` e.g. `SIGNAL_KIND_TYPING` | `"typing"` | mapped name (see table) |
 
-`*_UNSPECIFIED` (and any unrecognized value) decodes to the safe default:
-`Op` → `CREATE`; `SignalKind` → ignored. These mappings MUST live in one place
-per kit (a `WireCodec`), never duplicated, so they cannot drift within a kit.
+An unset payload maps to `""` (ignored). `*_UNSPECIFIED` (and any unrecognized
+value) decodes to the safe default: `Op` → `CREATE`; `SignalKind` → ignored.
+These mappings MUST live in one place per kit (a `WireCodec`), never duplicated,
+so they cannot drift within a kit.
 
 ### 3.2 Round-trip
 
@@ -162,7 +178,7 @@ There is intentionally **no canonical byte encoding**. Neither the inner `data`
 JSON nor proto3 serialization is guaranteed byte-identical across
 languages/libraries, and nothing needs it to be:
 
-- **Signal (L2) already authenticates and integrity-protects the whole
+- **Signal already authenticates and integrity-protects the whole
   `ClientMessage`.** Sender authenticity and tamper-evidence are provided by the
   encryption layer, over the payload regardless of byte order.
 - `data` is **parsed into a map and compared by value**, never by bytes.
@@ -240,8 +256,9 @@ model's confidentiality at runtime.
 - **v1** — Initial spec. §1 Routing (audience modes, fail-loud rule, canonical
   `conversationId`, `DIRECT_ROUTING_UNRESOLVED`), backed by `routing.json`.
   §2 Merge (GSet union, LWW total order with `authorDeviceId` tie-break,
-  tombstones, future-timestamp clamp), backed by `merge.json`. §3 Wire (enum ↔
-  app-form mappings, round-trip; byte-canonicity deliberately out of scope;
-  `ModelSync.signature` removed), backed by `wire.json`. §4 Model config (field
+  tombstones, future-timestamp clamp), backed by `merge.json`. §3 Wire (payload
+  oneof as message-kind discriminator + `Op`/`SignalKind` mappings, round-trip;
+  byte-canonicity deliberately out of scope; `ModelSync.signature` removed),
+  backed by `wire.json`. §4 Model config (field
   types + optionality, sync/ttl/audience defaults, fail-loud `INVALID_SCHEMA`),
   backed by `schema.json`.
