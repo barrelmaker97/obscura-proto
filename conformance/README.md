@@ -206,4 +206,19 @@ consumer generates one named test per case. If a kit goes red, either the kit
 has a bug or the vector encodes a behavior the kit has not yet implemented
 (track the latter as an explicit workstream).
 
+## Enforcement (CI)
+
+Two gates, split by dependency direction — proto never builds a kit:
+
+- **Upstream (this repo):** `conformance/validate.py` runs in CI
+  (`.github/workflows/ci.yml`) and fails the PR if any vector is malformed —
+  invalid JSON, wrong structure, a bad error code, an orphan file, or one not
+  referenced by `SPEC.md`. It has zero knowledge of any kit. Run it locally with
+  `python3 conformance/validate.py`.
+- **Downstream (each kit):** whether a kit *satisfies* a vector is proven in
+  that kit's own CI, against the proto commit it pins. A kit adopts a vector
+  change by bumping its `proto` submodule in a PR; that PR's conformance suite
+  is the gate. This is the same adopt-and-verify model the server proto and the
+  PoC web client already follow.
+
 The canonical prose definitions behind these vectors live in [`../SPEC.md`](../SPEC.md).
