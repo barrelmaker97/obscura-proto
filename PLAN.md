@@ -102,14 +102,19 @@ Swift's own README.
 Two kits, wire-identical, choosing **different local addresses for the same session, in both
 directions**. The conformance vectors could never catch this: they pin the wire, and the wire is fine.
 
-> **Status: reasoned from code, not yet observed.** F1 is the one finding in this document that has
-> not been reproduced against a live server. A code trace (triage, 2026-07-14) confirmed the poison
-> mechanism is present and pinned the exact trigger: it fires **only after the sender reconnects**
-> once the multi-device friend is in its accepted store — `connect()` → `rebuildDeviceMap` writes
-> `registrationId = 1` for every friend device, and the non-empty map then makes `sendToAllDevices`
-> skip the corrective per-device bundle fetch. The repo's existing two-device tests pass precisely
-> because they never force that reconnect. Proving F1 (Phase 0.1) requires a test that does. If it
-> passes *with* the reconnect, this section is wrong and the plan changes.
+> **Status (2026-07-14): CONFIRMED against a live server — but LATENT, masked by F9.** The
+> `F1 mechanism probe` in `TwoDeviceSendTests` reproduces it exactly: with a friend's device list
+> populated, `rebuildDeviceMap` rewrites both devices to `registrationId = 1`, both are encrypted
+> under one `(aliceId, 1)` session, and device 2 fails to decrypt. The mechanism is real.
+>
+> **It cannot fire in any current end-to-end flow, because of a second bug (F9): the own-device
+> registry is never populated, so every `DeviceAnnounce` is inert and a friend's device list in the
+> store is *always empty*.** With an empty list, `rebuildDeviceMap` has nothing to clobber, so the
+> `deviceMap` keeps the real per-device registration IDs the prekey fetch learned — and multi-device
+> delivery *works today*. (This corrects an earlier claim that multi-device is actively broken: it is
+> not. F1 is a landmine, not an active fire.) The probe had to inject a populated `DeviceAnnounce`
+> through Alice's genuine encryption path — exactly what a *fixed* propagation path would emit — to
+> detonate it. See F9 and the Phase 2 sequencing constraint.
 
 ### F2 — Kotlin acks messages it failed to decrypt; the server then deletes them
 
@@ -247,6 +252,26 @@ payload. Nothing derived from message content reaches Google or Apple. The fix i
 which launches the NSE, which connects, decrypts locally, persists, and *rewrites* the notification
 from plaintext it decrypted on-device. Apple sees "New message" and nothing else.
 
+### F9 — The own-device registry is never populated, so `DeviceAnnounce` is inert
+
+*(Discovered 2026-07-14 while proving F1. Not in the original audit.)*
+
+`addOwnDevice` (`DeviceDomain.kt:58`) has **no callers**. `register` / `loginAndProvision`
+(`AuthManager`) never record the local device; `approveLink` ships the *approver's*
+`getOwnDevices()` — which is empty — as the approval's `ownDevices`, so the approvee's
+`setOwnDevices([])` (`ObscuraClient.kt:1070`) also writes empty. Instrumented:
+`alice1.getOwnDevices() = 0`, `alice2.getOwnDevices() = 0`.
+
+Consequence: every `DeviceAnnounce` a client broadcasts carries an **empty** device list, so a
+friend's device list in the store is **always empty**, so `DeviceAnnounce` propagates nothing. This
+is a superset of F6: not only does a sender fail to learn a friend's *new* device, it never learns
+any friend's device list through the linking/announce path at all. Multi-device sends work today only
+because `sendToAllDevices` sources its targets from the `deviceMap` that the prekey fetch populates
+(F5) — a different, destructive path.
+
+**F9 is why F1 is currently latent.** An empty friend device list gives `rebuildDeviceMap` nothing to
+clobber. Fix F9 alone and F1 detonates. See the Phase 2 constraint.
+
 ---
 
 ## Phases
@@ -318,11 +343,22 @@ Client-only. No proto change, no server change. Small, safe, independently shipp
 
 ### Phase 2 — One identifier, everywhere
 
-The coordinated proto + server + both-kits change. Cures F1, F4, F5, F6 and the `authorDeviceId` lie
-together, because they are one disease.
+The coordinated proto + server + both-kits change. Cures F1, F4, F5, F6, F9 and the `authorDeviceId`
+lie together, because they are one disease.
+
+> **Hard sequencing constraint (from proving F1).** F1 is latent only because F9 keeps friend device
+> lists empty. **Fixing device-list propagation (F9/F6) and the `registrationId` addressing (F1)
+> must land in the same change.** Ship the propagation fix first and multi-device delivery breaks the
+> instant a friend's real device list reaches a peer — `rebuildDeviceMap` stamps every device
+> `registrationId = 1` and one ciphertext gets fanned to all of them. `TwoDeviceSendTests`'
+> `F1 mechanism probe` is the guard: it must be green before either half is considered done.
 
 - `Envelope.sender_device_id` (16-byte device UUID) in `obscura/v1/obscura.proto`; server stops
   discarding `auth_user.device_id`.
+- Populate the own-device registry (fix F9): `register` / `loginAndProvision` record the local
+  device; `approveLink` ships the real device list. Once addresses key on the device UUID, the
+  registration-id-less `DeviceInfo` is no longer a problem — propagation carries the identifier the
+  address actually uses.
 - Both kits key `ProtocolAddress` on the **device UUID**. `libsignal`'s `ProtocolAddress` is a
   purely *local* store key — it is never transmitted — and its `name` slot is a `String`, so a UUID
   fits. `registrationId` stops being an addressing identifier entirely.
