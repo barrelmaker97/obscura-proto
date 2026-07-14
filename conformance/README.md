@@ -22,10 +22,23 @@ forces every kit to prove it still conforms.
 
 | File | Behavior class | Consumed by | Status |
 |---|---|---|---|
-| `routing.json` | Delivery targeting (audience → recipients, fail-loud) | Kotlin + Swift | active |
-| `merge.json`   | CRDT merge (GSet union, LWW resolution)              | Kotlin + Swift | active |
-| `wire.json`    | Wire ↔ app mappings + `ModelSync` round-trip         | Kotlin + Swift | active |
-| `schema.json`  | Model-config parsing (fields/sync/ttl/audience)     | Kotlin (Swift pending) | active |
+| `wire.json`    | Wire ↔ app mappings + `ModelSync` round-trip         | Kotlin + Swift | **active** |
+| `routing.json` | Delivery targeting (audience → recipients, fail-loud) | Kotlin + Swift | **retiring** — see [`../SPEC.md`](../SPEC.md) §0.4 |
+| `merge.json`   | CRDT merge (GSet union, LWW resolution)              | Kotlin + Swift | **retiring** — see [`../SPEC.md`](../SPEC.md) §2 |
+| `schema.json`  | Model-config parsing (fields/sync/ttl/audience)     | Kotlin only | **retiring** — see [`../SPEC.md`](../SPEC.md) §4 |
+
+> **Three of these four vector classes are being deleted, and it is worth understanding why —
+> because the mechanism is sound and the mistake was upstream of it.**
+>
+> These fixtures exist to keep two hand-written implementations of the same logic in agreement.
+> That is a good solution to a problem the project should not have had: routing, merge, and
+> schema parsing were implemented *twice*, in two kits, to serve five flat models in one app.
+> Under [`SPEC.md` §0](../SPEC.md) that logic moves to the app, where it exists once — so there
+> is nothing left for these vectors to police. `wire.json` survives precisely because encoding
+> *must* be implemented twice: it is the one thing two kits genuinely have to agree on.
+>
+> The lesson to keep: a conformance suite is the right tool for logic you are *forced* to
+> duplicate, and a warning sign for logic you merely *chose* to duplicate.
 
 ## `routing.json`
 

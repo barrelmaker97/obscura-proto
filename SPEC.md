@@ -27,7 +27,116 @@ proof-of-concept and is not a normative conformance target.)
 
 ---
 
+## 0. The kit boundary
+
+**This section governs every other section in this document.** Where another
+section conflicts with it, this one wins and the other is wrong.
+
+### 0.1 What a kit is
+
+A kit is the **native platform layer for the Obscura app**. It exists because two
+things cannot be done in TypeScript on a phone:
+
+1. **libsignal** ships as `libsignal-java` and `libsignal-swift`. There is no
+   supported shared core, so the Signal protocol must be implemented twice.
+2. **The push path must run with the app closed.** On iOS a Notification Service
+   Extension is a separate process with a tight memory budget and no React Native
+   runtime. It must decrypt a message and produce notification text on its own.
+
+A kit is **not** a general-purpose framework. It has exactly one consumer — the
+app — and no API-stability obligation to anyone else. It MUST NOT be designed,
+documented, or marketed as a reusable data layer.
+
+### 0.2 The rule
+
+> **If the kit reads it, it is a field in `client.proto`.
+> If it is not in `client.proto`, the kit MUST NOT read it.**
+
+The proto *is* the boundary. Everything below follows from this one line.
+
+This rule is what makes the boundary reviewable: to check whether a kit has
+overstepped, read its field accesses. Any read of application data that did not
+come from a declared proto field is a violation, no matter how reasonable it
+looks locally.
+
+### 0.3 The kit MUST own
+
+- Transport (REST + gateway WebSocket, envelope ack, offline send queue).
+- The Signal protocol: sessions, identity, prekeys, encrypt/decrypt.
+- Device provisioning, linking, revocation, takeover.
+- The friend graph — needed both to address a peer's devices and to resolve a
+  sender's display name locally (§0.5).
+- The message store. The push path writes to it with the app closed, so it
+  cannot live in the app's runtime.
+- Attachment encryption, upload, download.
+- The push-wake path: decrypt → persist → notify.
+
+### 0.4 The kit MUST NOT
+
+- **MUST NOT parse an application payload.** `AppData.payload` is opaque bytes.
+- **MUST NOT know an application model name.** `"pix"`, `"directMessage"`, and
+  friends are opaque keys the kit stores and echoes back. A model name MUST NOT
+  appear as a literal in kit source.
+- **MUST NOT resolve recipients.** The caller names them. A kit fans out to the
+  devices of the userIds it is given, and makes no delivery decision of its own.
+- **MUST NOT read an application field by name.** No `data["conversationId"]`,
+  no `data["senderUsername"]`, no field sniffing of any kind.
+- **MUST NOT implement query, relationship, or observation APIs.** Derived state
+  is the app's job.
+- **MUST NOT accept configuration that names application concepts.** A settings
+  field like `conversationModel` is proof the boundary has already been crossed:
+  the kit only needs to be told what an app's data *means* if it is doing
+  something it should not be doing.
+- **MUST NOT post an OS notification whose content came from anywhere other than
+  declared proto fields plus copy the app registered.**
+
+### 0.5 Sender identity
+
+A notification and a UI label MUST name the sender using the **local friend
+graph**, keyed by the sender identity on the authenticated envelope. A kit MUST
+NOT take a display name from a message payload — a payload-supplied name is
+attacker-controlled and lets a peer choose how they are labelled on screen.
+
+The envelope tells you *who really sent this*. The payload tells you *what they
+chose to say*. Never confuse the two.
+
+### 0.6 The app MUST own
+
+Model semantics and validation; recipient resolution; all derived state
+(queries, filters, sorting); notification copy; expiry (an `expiresAt` field the
+app filters on).
+
+### 0.7 Consequences
+
+- Adding a **field** to existing content: app only. The kit never sees it.
+- Adding a **new notifiable content type**: a deliberate `client.proto` change
+  plus both kits. This is rare, and it should be deliberate — you are also
+  designing new notification UX at the same time.
+- If a kit cannot do its job using declared proto fields alone, **fix the proto**.
+  Reaching into the payload is never the answer.
+
+### 0.8 Why this section exists
+
+It was written after an audit found the opposite of all of the above: a
+schema-driven ORM, CRDT engine, query DSL, and audience-routing system
+implemented **twice**, in two languages, to serve five flat models — with a
+conformance suite built to keep the two copies in agreement. None of it was
+required by the app. A generic engine had grown in the kits because nothing was
+written down that said it must not, and each individual commit looked reasonable.
+
+The lesson generalizes: an agent or engineer working inside one kit repository
+**cannot** see that the engine is unnecessary, because the evidence lives in the
+app. Given "improve this repo," they will harden what they find. This document is
+the brief you give them instead.
+
+---
+
 ## 1. Routing (delivery targeting)
+
+> **SUPERSEDED by §0.4 — pending removal.** Recipient resolution moves to the
+> app; a kit no longer resolves an audience, so it cannot misroute. The rules
+> below describe the engine being deleted, and `conformance/routing.json`
+> retires with it. Retained only until the kits stop implementing them.
 
 *Vectors: [`conformance/routing.json`](conformance/routing.json).*
 
@@ -83,6 +192,18 @@ so vectors and cross-platform error handling can match on it.
 ---
 
 ## 2. Merge (CRDT resolution)
+
+> **SUPERSEDED — pending removal.** The app's five models need `APPEND` (dedupe
+> by `id`) and `REPLACE` (higher `timestamp` wins), declared per message on the
+> wire. That is a merge *rule*, not a CRDT engine, and it is small enough that
+> two implementations cannot meaningfully diverge. The generality below — GSet
+> union semantics, tombstone ordering, the `authorDeviceId` tie-break — serves
+> concurrent multi-writer editing the app does not do. (`deleteEntry` has no
+> caller in the app at all, so §2.3 is dead on arrival.) `conformance/merge.json`
+> retires with it.
+>
+> §2.4 (the future-timestamp clamp) **survives** — it applies to any peer-supplied
+> timestamp, and belongs on the `REPLACE` rule and the device-announce guard.
 
 *Vectors: [`conformance/merge.json`](conformance/merge.json).*
 
@@ -195,6 +316,12 @@ first.** (Historically `ModelSync` carried a `signature` field — a keyless
 ---
 
 ## 4. Model config (schema parsing)
+
+> **SUPERSEDED by §0.4 — pending removal.** A kit does not parse an application
+> schema, because a kit does not act on application fields. The schema is the
+> app's, and stays in the app. `conformance/schema.json` retires with this
+> section. (It was never adopted by Swift, which is a fair signal of how much it
+> was worth.)
 
 *Vectors: [`conformance/schema.json`](conformance/schema.json).*
 
