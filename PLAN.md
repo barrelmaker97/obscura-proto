@@ -103,8 +103,13 @@ Two kits, wire-identical, choosing **different local addresses for the same sess
 directions**. The conformance vectors could never catch this: they pin the wire, and the wire is fine.
 
 > **Status: reasoned from code, not yet observed.** F1 is the one finding in this document that has
-> not been reproduced against a live server. Proving it is Phase 0's first task. If the two-device
-> test passes, this section is wrong and the plan changes.
+> not been reproduced against a live server. A code trace (triage, 2026-07-14) confirmed the poison
+> mechanism is present and pinned the exact trigger: it fires **only after the sender reconnects**
+> once the multi-device friend is in its accepted store — `connect()` → `rebuildDeviceMap` writes
+> `registrationId = 1` for every friend device, and the non-empty map then makes `sendToAllDevices`
+> skip the corrective per-device bundle fetch. The repo's existing two-device tests pass precisely
+> because they never force that reconnect. Proving F1 (Phase 0.1) requires a test that does. If it
+> passes *with* the reconnect, this section is wrong and the plan changes.
 
 ### F2 — Kotlin acks messages it failed to decrypt; the server then deletes them
 
@@ -254,15 +259,49 @@ Nothing else is safe until this exists, and it is also the safety net for the re
 
 | # | Task | Repo |
 |---|---|---|
-| 0.1 | **Two-device integration test.** Alice with two linked devices; Bob sends; assert *both* decrypt. | ObscuraKit-Kotlin |
-| 0.2 | **Ack-semantics test.** Feed an undecryptable envelope; assert the server still holds it afterward. | ObscuraKit-Kotlin |
-| 0.3 | **Get the integration suite green.** 6 failures at baseline (4 × `ORMMessageTests`, 2 × `SignalECSTests`), unnoticed because the Copilot sandbox had no server. | ObscuraKit-Kotlin |
-| 0.4 | **Swift verification story.** Swift cannot be built or run on the current Linux box (`docs/PITFALLS.md`: Linux unsupported; vendored libsignal absent). Every Swift claim in this document is code-inspection only. | ObscuraKit-swift / CI |
+| 0.1 | **Two-device integration test** that forces the **sender-reconnect-after-friendship** sequence (see below). Alice with two devices; Bob befriends her, **reconnects**, then sends; assert *both* of Alice's devices decrypt. | ObscuraKit-Kotlin |
+| 0.2 | **Ack-semantics test.** Feed an undecryptable envelope; reconnect; assert the server still holds it. | ObscuraKit-Kotlin |
+| 0.3 | **Fix the test *environment*, not the suite.** The "6 baseline failures" story is fiction (see below). Seed the MinIO bucket and raise the auth rate limit in `docker-compose.yml` so the suite is runnable in one pass. | ObscuraKit-Kotlin / obscura-server |
+| 0.4 | **Swift verification story.** libsignal v0.40.0's FFI **does** build on this Linux box (NDK libclang + libxml2 shim); the full kit does **not** — GRDB/SQLCipher needs Apple-only CommonCrypto. See below. | ObscuraKit-swift / CI |
 
-**Acceptance:** 0.1 **fails** (proving F1), 0.2 **fails on Kotlin** (proving F2), and the rest of the
-suite is green. A red suite cannot protect a reset.
+**Acceptance:** 0.1 **fails** (proving F1), 0.2 **fails on Kotlin** (proving F2). The rest of the
+suite is already green against a *correctly configured* server — that is not the bar. The bar is that
+0.1 and 0.2 exist and force the paths nothing currently tests.
 
-> If 0.1 *passes*, F1 is wrong. Stop and re-plan.
+> **0.3 correction (triage, 2026-07-14).** The premise "6 failures (4 × `ORMMessageTests`, 2 ×
+> `SignalECSTests`), unnoticed because the sandbox had no server" is **wrong**. Both classes pass
+> (6/6, 9/9). Against a *default* local server the suite instead suffers ~63 environmental failures:
+> 57 × HTTP 429 (server auth limiter defaults to 1/s; the suite fires faster) and 6 × HTTP 500
+> (`docker-compose.yml` declares `test-bucket` but never creates it). Seed the bucket and raise the
+> limit and there are **zero code failures**. So RESET.md item 4 ("the suite was red and nobody
+> knew") is also fiction and should be corrected. The real problem is not red — it is a **coverage
+> gap** on exactly the invariants the reset must not break (F1's send path, F2/F3 ack semantics, F4
+> `authorDeviceId`), plus a compose file that can't run the suite as shipped.
+
+> **0.1 is a trap.** The repo already has *passing* two-device tests (`MultiDeviceFanOutTests`,
+> `DeviceLinkFlowTests`). They pass because the **sender never reconnects after the multi-device
+> friend lands in its accepted store**, so its `deviceMap` is empty at send time and
+> `sendToAllDevices` runs the corrective per-device `fetchPreKeyBundles`. F1 only bites *after* a
+> sender reconnect: `connect()` → `rebuildDeviceMap` poisons every friend device to `registrationId
+> = 1`, and the now-non-empty map makes `sendToAllDevices` **skip** the corrective fetch
+> (`MessageSender.kt:17`), so both devices are encrypted under one `(userId, 1)` session. **A 0.1
+> test that does not reconnect the sender will pass and give false confidence.** If 0.1 passes *with*
+> the reconnect, F1 is wrong — stop and re-plan.
+
+> **0.4 finding (2026-07-14): Swift builds *partway* on Linux.** libsignal v0.40.0's Rust FFI builds
+> on this Linux host — two environmental fixes, neither touching Signal's code: point `LIBCLANG_PATH`
+> at the Android NDK's LLVM-18 libclang (clang 21's bindgen mis-parses vendored BoringSSL, failing on
+> `GENERAL_NAME_new`), and put a `libxml2.so.2` shim on `LD_LIBRARY_PATH`. The **full kit does not
+> build**: GRDB's bundled SQLCipher needs `CommonCrypto/CommonCrypto.h`, which is Apple-only — it is
+> the at-rest cipher for the message store. `PITFALLS.md:21` blames the Linux drop on
+> `URLSessionWebSocketTask`; the build actually walls at SQLCipher first, so the doc names the wrong
+> cause. The Signal session store is GRDB-backed and the module is monolithic, so no crypto-only
+> slice compiles. **Consequence:** the Swift session-addressing claims (`decrypt` defaults
+> `senderRegId: 1`; outbound sessions at `(userId, realRegId)` → inbound/outbound addresses diverge)
+> remain code-inspection only. The protocol *mechanism* can be proven with the libsignal that now
+> builds (encrypt at one address, decrypt at another, observe failure); full end-to-end Swift
+> verification needs macOS CI, or an OpenSSL-backend SQLCipher fork (real work, and a non-shipping
+> build). **Decision pending: which.**
 
 ### Phase 1 — Stop the data loss
 
