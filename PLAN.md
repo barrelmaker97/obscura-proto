@@ -198,19 +198,30 @@ the reverse lookup through `deviceMap` returns null on a cold map and callers fa
 `sourceUserId` — a *user* id in a field documented as a *device* id. **A security property asserted
 falsely.**
 
-### F5 — `GET /v1/users/{userId}` is destructive and is used as device discovery
+### F5 — Cold-start re-discovery re-fetches prekey bundles it doesn't need *(downgraded)*
+
+*(Severity revised down 2026-07-16 after review. No new endpoint. Left here because the cleanup lands
+naturally in Phase 2.)*
 
 `key_repo.rs:166-180` runs a `DELETE ... RETURNING` that consumes one one-time prekey from **every
-device the user owns**, per call. The OpenAPI says so. Nothing on the client side acts like it knows.
+device the user owns**, per call. Fetching a bundle on **first contact** is legitimate and by design —
+you need a session and the prekey is consumed to build it. The clients also honor the replenishment
+mechanism on both paths: `startPreKeyStatusListener` acts on the server's `PreKeyStatus` frames, and
+`checkAndReplenishPreKeys` self-checks after every received message (`ObscuraClient.kt:781-799`). So
+routine consumption is self-correcting for any device that comes online periodically.
 
-`MessageSender.sendToAllDevices` calls it whenever its in-memory `deviceMap` has no entry for a user,
-and `parsePreKeyBundles` populates `deviceMap` as a *side effect* — so a prekey-consuming endpoint is
-the kits' device-enumeration mechanism. When prekeys run out, `fetch_pre_key_bundle` returns
-`one_time_pre_key: None` and sessions silently fall back to signed-prekey-only: **weaker forward
-secrecy, no error**.
+The real defect is narrower: `deviceMap` is **in-memory**, so a cold start re-fetches bundles purely
+to repopulate it (`MessageSender.sendToAllDevices` when `deviceMap` is empty), consuming a prekey per
+device even when a **persisted session already exists** and no prekey is needed. That is a client-side
+inefficiency — persist the device map, or rebuild it from persisted sessions and the friend device
+list — **not a server change**.
 
-There is no non-destructive alternative. `GET /v1/devices` is self-only, enforced in SQL
-(`device_repo.rs:44,81` — every query carries `AND user_id = $2` from the JWT).
+Phase 2 largely dissolves it: once addresses key on the device UUID and F9 is fixed, ongoing device
+discovery moves to the reliably-queued `DeviceAnnounce` / friend-handshake path, and the prekey fetch
+returns to first-contact-only. Residual risk: a device offline long enough to be drained to zero falls
+back to signed-prekey-only for *new* sessions — rare, and a well-understood Signal degradation, not a
+break. `GET /v1/devices` is self-only (`device_repo.rs:44,81`), but that no longer matters because we
+are not adding a cross-user device-list endpoint.
 
 ### F6 — A friend's *new* device never receives your messages
 
@@ -326,7 +337,8 @@ suite is already green against a *correctly configured* server — that is not t
 > remain code-inspection only. The protocol *mechanism* can be proven with the libsignal that now
 > builds (encrypt at one address, decrypt at another, observe failure); full end-to-end Swift
 > verification needs macOS CI, or an OpenSSL-backend SQLCipher fork (real work, and a non-shipping
-> build). **Decision pending: which.**
+> build). **Decided (2026-07-16):** prove the addressing *mechanism* now with a libsignal-level test
+> (no GRDB); rely on macOS CI for full end-to-end Swift verification later. No SQLCipher fork.
 
 ### Phase 1 — Stop the data loss
 
@@ -379,11 +391,15 @@ actual device.
 > sealed sender, no groups. This rule is why Phase 2 needs no device-numbering scheme. It belongs in
 > SPEC §0.
 
-**Open decision — blocks Phase 2.** F5 has no non-destructive alternative today. Recommendation: add
-`GET /v1/users/{userId}/devices` returning device UUIDs and identity keys with **no key material**.
-It separates "who are your devices" from "give me key material" — the actual conflation — and makes
-the server the source of truth for device lists instead of `DeviceAnnounce`, a peer broadcast that
-can be missed (F6). It leaks nothing the prekey endpoint does not already leak. **Needs Nolan's call.**
+**Resolved (2026-07-16): no new endpoint.** We considered a non-destructive
+`GET /v1/users/{userId}/devices`; decided against it. A prekey fetch on first contact is the designed,
+legitimate way to learn a peer's devices and establish a session, and the clients honor prekey
+replenishment, so consumption is self-correcting. Ongoing device discovery moves to the
+`DeviceAnnounce` / friend-handshake path — which is reliably queued like any message *once Phase 1's
+persist-then-ack lands* (until then, F2 can drop an announce). The cold-start re-fetch waste (F5) is
+fixed client-side by persisting/rebuilding the device map. The server stays dumb; no cross-user
+device-list endpoint. **Device-discovery source for Phase 2: the announce/handshake path, not the
+server.**
 
 ### Phase 3 — The reset
 
