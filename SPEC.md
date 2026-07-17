@@ -129,6 +129,32 @@ The lesson generalizes: an agent or engineer working inside one kit repository
 app. Given "improve this repo," they will harden what they find. This document is
 the brief you give them instead.
 
+### 0.9 Receive: persist-then-ack
+
+**An ACK is a DELETE. Ack only what you have durably persisted.**
+
+On the gateway an ack is destructive: the server deletes the acked envelope from
+the `messages` table (no tombstone, no redelivery). A message is redelivered only
+because it is *still on the server* — a fresh `MessagePump` on the next connection
+re-reads every remaining row. Therefore the ack is the client's commitment that it
+no longer needs the server's copy, and it MUST NOT be sent until the message is in
+the kit's own durable store.
+
+Normative rules for the receive loop, identical in both kits:
+
+1. A kit MUST NOT ack an envelope whose decrypt threw.
+2. A kit MUST NOT ack an envelope it skipped (e.g. a rate-limited sender). The
+   message stays on the server to be retried later.
+3. A kit MUST NOT ack until the durable persistence step for that message has
+   completed successfully. If persistence throws, the kit MUST NOT ack.
+4. The strict order per envelope is **decrypt → persist → (notify) → ack**. Any
+   in-process notification (a wake-up channel/flow the app observes) is emitted
+   *after* persistence and carries no data that persistence did not already store,
+   so it MAY be dropped under backpressure without loss — but only because the
+   durable store, not the notification, is the delivery path, and persistence
+   happened-before the ack. A notification that is the *sole* delivery path for a
+   message that then gets acked MUST NOT be silently droppable.
+
 ---
 
 ## 1. Routing (delivery targeting)
