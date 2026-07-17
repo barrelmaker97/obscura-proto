@@ -353,6 +353,23 @@ Client-only. No proto change, no server change. Small, safe, independently shipp
 
 **Acceptance:** 0.2 goes green on both kits. No behavioral difference between them on the receive path.
 
+> **Status (2026-07-16).**
+> - **Kotlin — DONE and verified.** `fix/phase1-persist-then-ack`. The loop had two acks (rate-limit
+>   path + an unconditional ack outside the try/catch); now one ack, reached only after decrypt +
+>   durable persist. `AckSemanticsTests` GREEN (was RED); `CoreFlowTests` and the two-device happy
+>   path GREEN; the F1 probe still FAILS (F1 untouched). SPEC §0.9 codifies the rule.
+> - **Swift — mostly already correct; one residual gap deferred to macOS.** F2/F3 were **Kotlin-only**:
+>   Swift already acks *inside* the `do` block (a decrypt failure skips it) and its rate-limit path
+>   already `return`s without acking, so it satisfies the primary invariant. The one gap: `routeMessage`
+>   is non-throwing and its persistence calls (`await messages.add`, `await friends.add`) swallow
+>   errors, so a persist failure *after* a good decrypt still acks — a latent violation of §0.9 rule 3.
+>   Closing it means making the persistence path throwing (`routeMessage` → `async throws`, `try await`
+>   at `ObscuraClient.swift:1779`). That is a signature change across the persistence actors and
+>   **cannot be compiled or tested on the Linux box** (GRDB/SQLCipher needs CommonCrypto), so it is
+>   **not** being done blind. Deferred to a macOS session / CI, where it must be compiled and a
+>   persist-failure test added. Until then, Swift is safe against the *decrypt-failure* data loss;
+>   only the rarer persist-failure path is unguarded.
+
 ### Phase 2 — One identifier, everywhere
 
 The coordinated proto + server + both-kits change. Cures F1, F4, F5, F6, F9 and the `authorDeviceId`
