@@ -79,7 +79,20 @@ message EnvelopeBatch {
 // The client MUST reply with an `AckMessage` containing this message's ID.
 message Envelope {
   bytes id = 1;         // UUID of the message (16 bytes).
-  bytes sender_id = 2;  // UUID of the sender (16 bytes).
+
+  // UUID of the sending USER (16 bytes), server-stamped. This is Signal's
+  // Envelope.source_service_id: a routing/attribution HINT, not a trust root. The
+  // recipient authenticates the sender via the Signal session (identity key), and
+  // takes the display name from its own friend graph — never by trusting this
+  // field or the payload. See SPEC.md §0.5.
+  bytes sender_id = 2;
+
   uint64 timestamp = 3; // Server-generated timestamp (ms) of when the message was received.
   bytes message = 4;    // The encrypted message payload
+
+  // UUID of the sending DEVICE (16 bytes), server-stamped from the sender's
+  // device-scoped JWT (unforgeable). This is Signal's Envelope.source_device:
+  // Signal sessions are pairwise device-to-device, so the recipient selects the
+  // inbound session by this device. A successful MAC then proves the sender.
+  bytes sender_device_id = 5;
 }
