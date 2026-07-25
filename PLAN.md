@@ -21,10 +21,11 @@ This file answers *in what order*, and *how we know each step worked*.
 **Phase 3 is now unblocked.** Both kits address Signal sessions by device UUID, both
 read `Envelope.sender_device_id`, and both prove it with tests that run against a real
 server in CI. Start Phase 3 by reading the four gaps recorded at sign-off in the
-Phase 2 status block — two of them (Swift MODEL_SYNC ack-before-persist; the
-`PushTests` flake) directly affect how much the reset's "did I break it?" signal can
-be trusted, and one (Swift cannot receive a `DEVICE_LINK_APPROVAL`) is in code the
-reset **keeps**, so it will not resolve itself.
+Phase 2 status block. The one that most affects the reset's "did I break it?" signal
+is **Swift's MODEL_SYNC ack-before-persist**, which this phase must close by
+construction. One (Swift cannot receive a `DEVICE_LINK_APPROVAL`) is in code the
+reset **keeps**, so it will not resolve itself. F10's CI-noise half is fixed, so a red
+`PushTests` during the deletion is once again worth investigating.
 
 ---
 
@@ -386,6 +387,34 @@ needs a deliberate choice. The root cause of the `connect()` failure itself is s
 stopped reproducing once diagnostics were attached, which is its own argument for making the failure
 observable instead of swallowed.
 
+> **Status (2026-07-25): MITIGATED in both kits; the contract question is still open for Phase 4.**
+>
+> Kotlin PR #44 and Swift PR #12: retry `connect()` once with a **250 ms** backoff and log both
+> attempts. The backoff is short deliberately — an NSE has ~30 s in total, so a retry costing seconds
+> would be worse than no retry. Kotlin previously swallowed the failure entirely; Swift already
+> logged it but still gave up after one attempt.
+>
+> **Measured, not assumed** (Kotlin, containerized server):
+>
+> | | before | after |
+> |---|---|---|
+> | `PushTests` isolation runs | 2 fail / 5 | **0 fail / 8** |
+> | test duration | 0.53s pass, **0.10–0.13s fail** | 0.54s baseline, **~0.80s in 3 of 8 runs** |
+>
+> The ~0.80s runs are the 250 ms backoff plus a second connect: the retry fired and recovered three
+> times out of eight, which also puts the underlying transient-failure rate at **~35–40%** — far
+> higher than the ~25% test-failure rate, because most failures now heal.
+>
+> **Still open, and it belongs to Phase 4:** the zero-count return is unchanged, so a *genuine*
+> connect failure (both attempts) is still reported as "nothing waiting". Deliberately left alone —
+> making it distinguishable changes what `obscura-pix`'s push handler receives and needs matching
+> changes in both kits. Decide it when the NSE lands, and note the NSE makes it sharper: a silent
+> no-op inside a 30-second extension budget looks exactly like success.
+>
+> **The root cause of the `connect()` failure is still unknown.** It is transient and recovers on
+> retry, which is why this is *mitigated* rather than *fixed*. If it ever stops recovering, the logs
+> now say so instead of returning zeros.
+
 ---
 
 ## Phases
@@ -639,9 +668,12 @@ actual device.
 >    why the registry holds 1 and not 0; the cross-device half was never implemented. Found by CI
 >    printing `getOwnDevices()=1` where Kotlin's fixture prints 2. Device linking is on SPEC §0.3's
 >    **keep** list, so the reset will not resolve this one — it needs a decision of its own.
-> 3. **The push-drain swallows a failed `connect()` and reports success — F10.** Surfaced as a
+> 3. **The push-drain swallowed a failed `connect()` and reported success — F10. MITIGATED
+>    2026-07-25 (Kotlin #44, Swift #12): retry once + log. `PushTests` went from 2 failures / 5 runs
+>    to 0 / 8. The contract question — a genuine failure still returns zero counts — is deferred to
+>    Phase 4.** Surfaced as a
 >    ~25%-flaky `PushTests.processPendingMessages connects if not connected` (3 failures in ~10 runs,
->    local *and* CI, including on a docs-only PR). It is **not** merely a flaky test. Mechanism, from
+>    local *and* CI, including on a docs-only PR). It was **not** merely a flaky test. Mechanism, from
 >    `ObscuraClient.kt:735`:
 >
 >    ```kotlin
@@ -663,11 +695,11 @@ actual device.
 >    "could not connect" result — but not silence. Changing it alters what `obscura-pix`'s push
 >    handler receives, so it is a deliberate API decision, not a cleanup.
 >
->    Not a Phase 2 regression (`PushTests` is untouched by Phases 1–2). Until it is fixed, expect
->    roughly one in four full runs to go red here — **a red `PushTests` during the reset is probably
->    not your diff.** The underlying cause of the `connect()` failure itself is still unknown: it
->    declined to reproduce with diagnostics attached, which is itself a reason to make the failure
->    observable rather than swallowed.
+>    Not a Phase 2 regression (`PushTests` is untouched by Phases 1–2). **The CI-noise half of this
+>    is now resolved** — a red `PushTests` during the reset is once again worth investigating rather
+>    than shrugging at. The underlying cause of the `connect()` failure is still unknown: it declined
+>    to reproduce with diagnostics attached, and it now heals on retry, so it is *mitigated*, not
+>    *fixed*. See F10 for the full measurement.
 > 4. **Kotlin's F1 probe has no Swift equivalent.** Both kits now prove the invariant against a real
 >    server; only Kotlin additionally exercises the *adversarial* case (a friend-store device list
 >    that the old code would poison on rebuild). The Swift tests would not catch a Swift-specific
