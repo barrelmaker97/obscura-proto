@@ -229,21 +229,31 @@ not belong in the kit — no matter how convenient the bridge makes it.
 
 ---
 
-## 8. Open questions for review
+## 8. Decisions taken (2026-07-25)
 
-1. **`peek` batch size and payload size.** Bridge transfers are copies; a large `peek` of image
-   payloads could be expensive. Should attachments always be by reference (id) and never inline?
-   (Leaning yes — `uploadAttachment`/`downloadAttachment` already exist.)
-2. **Does the app ever need to write to the inbox?** For self-sync (`SENT_SYNC`), the sender's own
-   other devices receive a copy through the normal path — so probably no. Confirm before building.
-3. **Inbox durability vs. the message store.** Are they one table or two? The kit still owns "the
-   message store" (§0.3) for the push path. Simplest is: the inbox *is* that store, and `consume`
-   is what makes a row disappear. Alternative: keep a separate long-lived message history in the kit —
-   but that reintroduces the kit holding application data, so **recommend one table**.
-4. **Migration order.** pix cannot compile against a kit whose old API is gone. Proposed order:
-   (a) pix gains a durable store + test suite; (b) kits gain inbox/send alongside the existing ORM;
-   (c) pix switches to the new API; (d) the old surface is deleted. Steps (b)–(d) are per-kit, and
-   Kotlin should go first — Swift cannot be built or iterated on Linux (`PLAN.md` 0.4), so it pays a
-   ~20-minute CI round trip per attempt and should port a shape already proven in Kotlin.
-5. **`registerNotificationTemplates` shape.** Flat `{modelKey: "sent you a pix"}`, or does it need
-   pluralisation/localisation? This is the one piece of the API Phase 4 will exercise hardest.
+1. **Attachments are always by reference, never inline in `peek`.** Bridge transfers are copies, so a
+   batch of image payloads would be paid for twice — once crossing the bridge, once in JS heap.
+   `payload` carries an attachment **id**; the app calls `downloadAttachment(id)` when it actually
+   needs the bytes. This also keeps `peek` cheap enough to call on every wake.
+2. **The inbox IS the message store — one table, not two.** §0.3 says the kit owns "the message
+   store" for the push path; that store is the inbox, and `consume` is what makes a row disappear. A
+   separate long-lived history in the kit would reintroduce the kit holding application data, which
+   is the thing this reset exists to remove. **Consequence to design against:** history lives in the
+   app, so anything the app wants to show later it must persist on consume.
+3. **Migration order** — pix cannot compile against a kit whose old API is gone:
+   1. pix gains a durable store **and** its test suite (prerequisite — `PLAN.md` Phase 3);
+   2. kits gain `inbox` + `send` **alongside** the existing ORM;
+   3. pix switches to the new API;
+   4. the old surface is deleted.
+
+   Steps 2–4 are per-kit, and **Kotlin goes first**: Swift cannot be built or iterated on Linux
+   (`PLAN.md` 0.4), so it pays a ~20-minute CI round trip per attempt and should port a shape already
+   proven in Kotlin rather than discover it.
+
+### Still open
+
+4. **Does the app ever need to write to the inbox?** For self-sync, the sender's own other devices
+   receive a copy through the normal receive path — so probably not. Confirm before building.
+5. **`registerNotificationTemplates` shape.** Flat `{modelKey: "sent you a pix"}` for now; revisit in
+   Phase 4, which is the only thing that will exercise pluralisation and localisation properly.
+   Deliberately not over-designed ahead of its only consumer.
