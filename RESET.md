@@ -148,6 +148,20 @@ Roughly 70% of each kit, and the part whose tests pass:
 - Friend graph (needed to address devices *and* to resolve sender names — `SPEC §0.5`)
 - Attachment encryption / upload / download
 - The message store and the push-wake path
+- **The `ModelEntry` table itself — the engine dies, the table does not.** *(Added 2026-07-25.)*
+  `ModelEntry.sq` already has exactly the columns the thin design needs
+  (`model_name`, `entry_id`, `data`, `timestamp`, `author_device_id`), and `ModelStore.kt` writes
+  `data` as plain application JSON with the merge metadata in columns beside it — so ownership moves
+  across the bridge to pix with **no migration, no new schema and no data transform**. Keep
+  `timestamp` and `author_device_id`: they cost nothing and are the only thing a future backup
+  restore could be rebuilt from (`KIT_API.md` §8.1, §8.4). What *does* go with the engine:
+  `ModelAssociation` entirely (relationships were never bridged), and `deleted` / `ttl_expires_at`,
+  which die with tombstones and `TTLManager` and can be dropped in a later migration.
+  On iOS the equivalent table is `model_entries`, which differs — `id` not `entry_id`, a
+  `signature BLOB NOT NULL` Kotlin has no counterpart for, and TTL in a separate `ttl` table.
+  **Establish what writes and verifies `signature` before deleting anything on that side**; if it is
+  a real per-entry signature then iOS has an integrity check Android lacks, and the reset would
+  delete the signer. Normalise at the bridge, not by migrating either table.
 
 For scale: `orm/` is **1,726 lines of 8,683** in the Kotlin kit. This is a deletion, not a rewrite.
 (Re-measured on Kotlin `main` 2026-07-24, after Phases 1–2: **1,679 of 8,390**. The inventory below
