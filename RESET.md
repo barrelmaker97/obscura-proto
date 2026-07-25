@@ -2,12 +2,23 @@
 
 **Status: proposal. Temporary document — delete it when the reset is done.**
 
-**Not started as of 2026-07-24.** This is [`PLAN.md`](PLAN.md) Phase 3, and its entry condition is
-not yet met: Phase 2 is landed in proto, the server and Kotlin, but Swift is unmerged and unverified.
-Nothing in the inventory below has been deleted yet — the ORM, CRDT engine, query DSL, schema parser
-and routing engine are all still present in both kits, and `conformance/{routing,merge,schema}.json`
-are all still shipped. Two items below have been overtaken by Phase 0–2 findings and are corrected
-in place.
+**Not started as of 2026-07-25 — but now UNBLOCKED.** This is [`PLAN.md`](PLAN.md) Phase 3, and its
+entry condition is **met**: Phase 2 acceptance was signed off on 2026-07-25 with CI evidence on both
+kits. Nothing in the inventory below has been deleted yet — the ORM, CRDT engine, query DSL, schema
+parser and routing engine are all still present in both kits, and
+`conformance/{routing,merge,schema}.json` are all still shipped. Two items below have been overtaken
+by Phase 0–2 findings and are corrected in place.
+
+**Read the four gaps recorded at Phase 2 sign-off before deleting anything** (`PLAN.md`, Phase 2
+status block). Two bear directly on this phase:
+
+- **Swift acks `MODEL_SYNC` before durably persisting it** (`SPEC.md` §0.9 rule 3). The fix was
+  deliberately deferred *to this phase*, because it lives in the ORM/CRDT engine being deleted here.
+  Deleting that engine closes the hole by construction — **verify that it actually did**, rather than
+  assuming the deletion was sufficient.
+- **Swift cannot receive a `DEVICE_LINK_APPROVAL`** (no `case .deviceLinkApproval` in `routeMessage`).
+  That is in device linking, which SPEC §0.3 says a kit **keeps** — so it is *not* on this list, will
+  *not* be resolved by the reset, and needs its own decision.
 
 The target architecture is [`SPEC.md` §0](SPEC.md). This file is the evidence for
 getting there: what goes, what stays, and *why* — so no item rests on anyone's say-so.
