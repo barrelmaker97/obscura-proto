@@ -373,21 +373,71 @@ not belong in the kit — no matter how convenient the bridge makes it.
 
 ## 10. Prerequisites, and the migration order
 
-**Before the first line of inbox code:**
+**Three decisions, taken 2026-07-25, each to be done BEFORE the first line of inbox code.**
 
-1. **Kotlin has no schema-migration mechanism.** Every table is `CREATE TABLE IF NOT EXISTS`, there
-   are no `.sqm` files, and `DatabaseMigrations` was deleted. Adding an `Inbox` table to an existing
-   install yields `no such table` inside the persist step — which correctly refuses to ack, and then
-   that device receives nothing, silently, forever, while the server prunes at 1000/30 days. Decide:
-   one migration file, or an explicit greenfield wipe. `RESET.md` says "bump the schema and wipe",
-   but the wipe mechanism was deleted, so today it is neither.
-2. **Decide where the store lives, in Phase 3 not Phase 4.** The iOS NSE cannot read the current one:
-   the DB path is an app-private directory (not an App Group container) and the SQLCipher key has no
-   `kSecAttrAccessGroup`, so an extension cannot open it. Because the inbox *is* the message store,
-   this decides the table's location — and moving it later is a data migration on a kit that has no
-   migration mechanism (see 1). Also write down the **single-drainer rule**: only one process may
-   hold a gateway connection per device, or app and NSE both drain and both insert.
-3. **pix's durable store and test suite** (`PLAN.md` Phase 3 — a prerequisite, not a deliverable).
+### P1 — Kotlin adopts SQLDelight migrations (decided)
+
+**The two kits fail differently for the same change, and only one fails loudly.** Swift creates every
+table with `CREATE TABLE IF NOT EXISTS` at store init, so a new store class quietly works on an
+existing database. Kotlin opens with `AndroidSqliteDriver(ObscuraDatabase.Schema, …)`, has **zero**
+`.sqm` files and no `deriveSchemaFromMigrations`, so the generated schema version never moves: on an
+existing DB neither `create()` nor `migrate()` runs, and the new table simply does not exist. The
+persist step then throws, the kit correctly refuses to ack — and that device receives nothing,
+silently, forever, while the server prunes at 1000 messages / 30 days.
+
+| Option | Cost | Verdict |
+|---|---|---|
+| **Adopt SQLDelight migrations** (`.sqm` + a migration test) | one-time, small | **Chosen** |
+| Greenfield wipe on mismatch | small, but destroys the Signal identity — the device must re-provision | escape hatch only, never automatic |
+| Mimic Swift (`IF NOT EXISTS` on open) | trivial | rejected — codifies an accident as a design |
+
+Chosen for a reason beyond the inbox: **Phase 3 deletes tables too** (ORM entries, model config). A
+kit with no migration mechanism can only add by luck and can never remove. The migration must be
+covered by a test that a *migrated* database and a *freshly created* one end up with identical
+schemas — the double-entry between `.sq` and `.sqm` is exactly the mistake that produces the silent
+per-device kill above.
+
+`RESET.md`'s "greenfield — bump the schema and wipe" is only half true: `versionCode 1` and no store
+release mean no public installs, but developer devices are precisely the population this kills, and
+the wipe mechanism it refers to was itself deleted.
+
+### P2 — the store moves to an App Group container, now (decided)
+
+The iOS NSE cannot reach today's store on two counts: the DB path is `.applicationSupportDirectory`
+(app-private, not an App Group) and the SQLCipher key is stored with no `kSecAttrAccessGroup`, so an
+extension in a different bundle id cannot read it. **Because the inbox IS the message store (§8.4),
+this decides where that table lives.**
+
+Do it in Phase 3, not Phase 4. Now it costs a path change, a keychain attribute and an entitlement.
+Later it costs a **data migration of the only copy of the user's messages**, on a kit whose migration
+mechanism is P1. The asymmetry is the entire argument: today there is no data worth migrating.
+
+Two things settled with it:
+
+- **Single-drainer rule.** The server's per-device notifier is a broadcast and each `MessagePump`
+  keeps its own cursor, so app and NSE can both connect, both insert and both notify. Exactly one
+  process may hold the gateway connection at a time, enforced by an advisory lock file in the App
+  Group container; the NSE takes it only when the app does not hold it.
+- **GRDB `DatabaseQueue` → `DatabasePool` + WAL**, since two processes will touch the file even under
+  a single-writer rule.
+
+### P3 — pix's store is SQLite, chosen deliberately (decided)
+
+Not AsyncStorage, not MMKV. The app now owns merge-by-`entryId`, REPLACE-by-timestamp-with-tie-break
+(§8.2), `expiresAt` filtering and conversation queries — all of which want indexed lookups. A
+key-value store turns every merge into a read-modify-rewrite of the whole model, which is
+approximately what `allEntries`-refetch-everything does today, and that pattern is being deleted
+*because* it does not scale.
+
+This is also the largest single piece of Phase 3 work (§8.1) and the easiest to default into by
+accident, which is why it is written down as a decision rather than left to whoever starts first.
+
+### Order
+
+1. **P1** — unblocks every later schema change, additive or destructive.
+2. **P2** — cheapest while there is no data.
+3. **P3** + pix's test suite — the long pole; `merge.json`'s portable cases become its first tests.
+4. Then the inbox itself, Kotlin designing first.
 
 **Migration order** — pix cannot compile against a kit whose old API is gone, and it has **one**
 TypeScript surface for both platforms with both kits consumed from source (Gradle composite build,
