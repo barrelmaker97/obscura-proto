@@ -321,6 +321,23 @@ Both rules are **idempotent**, which is what makes redelivery from the inbox saf
 `peek` and `consume` and reprocessing converges. **The drain protocol's safety depends on this — a
 future non-idempotent rule breaks the contract with it.**
 
+> **Caveat found by mutation-testing the ported vectors (2026-07-25):** APPEND is *first-wins*, so it
+> converges only under its real invariant — that an entry id is written once, and any duplicate is a
+> redelivery of identical bytes (ids are `model_timestamp_random`). A **hostile** peer replaying an
+> established id with *different* content makes the outcome arrival-order dependent, and the two
+> devices can disagree about that entry.
+>
+> That is a **deliberate choice, not a defect**: the alternative, last-wins, converges but lets any
+> peer overwrite an entry you already hold by replaying its id — structurally the same as the
+> friend-graph self-rename fixed the same day. Divergence about a hostile write is visible and
+> recoverable; a silently rewritten message is neither. Pinned by
+> `pix/src/domain/__tests__/merge.test.ts`, which asserts the non-convergence explicitly so nobody
+> later "fixes" it.
+>
+> The vectors alone could not have caught this: `merge.json`'s idempotence case uses a duplicate
+> carrying identical data, so first-wins and last-wins are indistinguishable there. Flipping APPEND
+> to last-wins passed all 13 vector-driven tests.
+
 **`conformance/merge.json` ports partially, not wholly.** Of its six cases, three survive as
 APPEND/REPLACE (GSet union, GSet idempotence, LWW higher-timestamp) and one survives *only because*
 of the tie-break decision above. The two tombstone cases (`newer tombstone wins`, `stale write does
