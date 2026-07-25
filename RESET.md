@@ -2,6 +2,24 @@
 
 **Status: proposal. Temporary document — delete it when the reset is done.**
 
+**Not started as of 2026-07-25 — but now UNBLOCKED.** This is [`PLAN.md`](PLAN.md) Phase 3, and its
+entry condition is **met**: Phase 2 acceptance was signed off on 2026-07-25 with CI evidence on both
+kits. Nothing in the inventory below has been deleted yet — the ORM, CRDT engine, query DSL, schema
+parser and routing engine are all still present in both kits, and
+`conformance/{routing,merge,schema}.json` are all still shipped. Two items below have been overtaken
+by Phase 0–2 findings and are corrected in place.
+
+**Read the four gaps recorded at Phase 2 sign-off before deleting anything** (`PLAN.md`, Phase 2
+status block). Two bear directly on this phase:
+
+- **Swift acks `MODEL_SYNC` before durably persisting it** (`SPEC.md` §0.9 rule 3). The fix was
+  deliberately deferred *to this phase*, because it lives in the ORM/CRDT engine being deleted here.
+  Deleting that engine closes the hole by construction — **verify that it actually did**, rather than
+  assuming the deletion was sufficient.
+- **Swift cannot receive a `DEVICE_LINK_APPROVAL`** (no `case .deviceLinkApproval` in `routeMessage`).
+  That is in device linking, which SPEC §0.3 says a kit **keeps** — so it is *not* on this list, will
+  *not* be resolved by the reset, and needs its own decision.
+
 The target architecture is [`SPEC.md` §0](SPEC.md). This file is the evidence for
 getting there: what goes, what stays, and *why* — so no item rests on anyone's say-so.
 
@@ -37,11 +55,11 @@ no relationships, and no reactive observation of entries.
 | `TTLManager` | `story` declares `ttl: '24h'` in `schema.ts` and **nothing in `src/` ever references TTL or expiry**. Becomes an `expiresAt` field the app filters on. |
 | Typed models (`TypedModel.wrap<T>`) | A Kotlin-only API. The app defines models as JSON through `defineModels`; it cannot reach this. |
 | Legacy TEXT / IMAGE message path | Not on the bridge. The app never calls `send()`. |
-| `sendText()` | Added by me this session to keep transport tests green. Exactly the "legacy breadcrumb" this reset exists to remove. Migrate those tests to the real send path. |
+| `sendText()` | Added by me this session to keep transport tests green. Exactly the "legacy breadcrumb" this reset exists to remove. Migrate those tests to the real send path. **(Verified gone from Kotlin `main` 2026-07-24.)** |
 | `conversations` StateFlow, `messagesDomain` | Not on the bridge. The app builds conversation views from ORM entries in `ChatListScreen`/`ChatScreen`. |
 | `ObscuraConfig.conversationModel` | `SPEC §0.4`: config that names an application concept is proof the boundary was already crossed. |
 | `ProcessedCounts.pixCount` / `messageCount` (and `otherCount`) | Kit knowing app model names. Push counts by opaque model key; copy comes from templates the app registers. |
-| `DatabaseMigrations` | Greenfield, no installed base, no external users. Bump the schema and wipe. (I wrote a correct version of this today. Correct-and-unnecessary is still a maintenance surface.) |
+| `DatabaseMigrations` | Greenfield, no installed base, no external users. Bump the schema and wipe. (I wrote a correct version of this today. Correct-and-unnecessary is still a maintenance surface.) **(Verified gone from Kotlin `main` 2026-07-24.)** |
 | `SessionSnapshot` / `saveSnapshot` / `loadSnapshot` | Unreferenced by production code; its `toMap()` writes `authToken` where the reader wants `token`; its KDoc urges adoption. Already removed this session. |
 | Recovery phrase / BIP39 / encrypted backups / remote revocation | No bridge method exposes any of it. **Verify before deleting** — this may be intended product, not dead code. Flagged, not condemned. |
 | `gatewayUrl` config field | Verified unused in kit source; already `@Deprecated`. |
@@ -96,6 +114,9 @@ Roughly 70% of each kit, and the part whose tests pass:
 - The message store and the push-wake path
 
 For scale: `orm/` is **1,726 lines of 8,683** in the Kotlin kit. This is a deletion, not a rewrite.
+(Re-measured on Kotlin `main` 2026-07-24, after Phases 1–2: **1,679 of 8,390**. The inventory below
+is otherwise unchanged — `settings`, `senderUsername`, and the `queryEntries`/`deleteEntry` wrappers
+are all still present in `obscura-pix`, which still has no test suite.)
 
 ## Real bugs that survive the reset — fix, don't just delete around
 
@@ -107,14 +128,29 @@ For scale: `orm/` is **1,726 lines of 8,683** in the Kotlin kit. This is a delet
    Swift has the identical defect (`ObscuraClient.swift:1894` passes `sourceUserId`;
    `ReceivedMessage.senderDeviceId` is hardcoded `nil` at `:1788`).
    **This is a security property being asserted falsely and must be fixed or dropped.**
+   > **Update (2026-07-24): fixed in Kotlin by Phase 2, still open in Swift.** The envelope now
+   > carries `sender_device_id`; Kotlin derives `authorDeviceId` from the address of the session
+   > that decrypted, and `AuthorDeviceIdTests` asserts it against the sender's real device UUID.
+   > The rule is normative in `SPEC.md` §0.10. Swift's fix is written but unmerged and unverified
+   > (`swift/phase2-device-uuid`), so the false assertion is still shipping on Swift `main`.
 2. **Swift has no schema migration mechanism at all** (every table is `CREATE TABLE IF NOT
    EXISTS`). Under greenfield rules this is fine — but it must be a *decision*, not an accident.
 3. **Swift's `.friends` audience narrows a broadcast** when an entry happens to carry a
    `conversationId`/`recipientUsername` (`SyncManager.swift:187-193`). Deleted along with the
    routing engine — but note the routing vectors never caught it, because no `friends` case
    carried such a field.
-4. **The integration suite was red and nobody knew** — 6 failures against a real server. It
-   needs a container the agent sandbox couldn't reach, so every agent reported success.
+4. ~~**The integration suite was red and nobody knew** — 6 failures against a real server. It
+   needs a container the agent sandbox couldn't reach, so every agent reported success.~~
+   > **Retracted (triage, 2026-07-14 — see `PLAN.md` 0.3).** This was wrong. Both named classes pass
+   > (`ORMMessageTests` 6/6, `SignalECSTests` 9/9). Against a *default* local server the suite
+   > suffers ~63 **environmental** failures — 57 × HTTP 429 (the auth limiter defaults to 1/s and the
+   > suite fires faster) and 6 × HTTP 500 (`docker-compose.yml` declares `test-bucket` but never
+   > creates it). Seed the bucket, raise the limit, and there are zero code failures. The real
+   > problem was never red tests: it is a **coverage gap** on exactly the invariants the reset must
+   > not break (the F1 send path, F2/F3 ack semantics, F4 `authorDeviceId`), plus a compose file that
+   > cannot run the suite as shipped. Phases 0–2 closed part of that gap (`AckSemanticsTests`,
+   > `AuthorDeviceIdTests`, `IdentityFromEnvelopeTests`, `TwoDeviceSendTests`); keep it closed
+   > through the deletion.
 5. **`obscura-pix` has no test suite at all.** CI runs `tsc`, `eslint`, and an Android release
    build. Compile breaks are caught; every semantic regression is not.
 

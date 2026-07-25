@@ -8,6 +8,24 @@ Companion documents:
 
 This file answers *in what order*, and *how we know each step worked*.
 
+## Status at a glance (2026-07-24)
+
+| Phase | State | Where |
+|---|---|---|
+| 0 — make the truth observable | **Done** (Kotlin); Swift verification scoped to a libsignal-level probe | Kotlin `main` (`02c7dd7`); Swift `verify/swift-addressing-probe` (`a002a62`, unmerged) |
+| 1 — stop the data loss | **Kotlin done + verified.** Swift's primary invariant was already satisfied; its persist-failure residual is written but unverified | Kotlin `main` (`c196d15`); Swift `swift/phase2-device-uuid` (`eeb8bee`, unmerged) |
+| 2 — one identifier, everywhere | **DONE — acceptance signed off 2026-07-25**, proven by tests on both kits against a real server. Four known gaps recorded at sign-off | proto `main` (`ef3e51c`, PR #5); server `main` (`0b0fe38`, PR #155, v0.9.4); Kotlin `main` (PRs #40, #42); Swift (PRs #6, #8, #9) |
+| 3 — the reset (`RESET.md`) | **Not started.** The ORM, CRDT engine, query DSL, schema parser and routing engine are all still present in both kits; `conformance/{routing,merge,schema}.json` still shipped | — |
+| 4 — push + NSE | **Not started** | — |
+
+**Phase 3 is now unblocked.** Both kits address Signal sessions by device UUID, both
+read `Envelope.sender_device_id`, and both prove it with tests that run against a real
+server in CI. Start Phase 3 by reading the four gaps recorded at sign-off in the
+Phase 2 status block — two of them (Swift MODEL_SYNC ack-before-persist; the
+`PushTests` flake) directly affect how much the reset's "did I break it?" signal can
+be trusted, and one (Swift cannot receive a `DEVICE_LINK_APPROVAL`) is in code the
+reset **keeps**, so it will not resolve itself.
+
 ---
 
 ## Why the reset is not first
@@ -32,7 +50,8 @@ Both kits key their Signal sessions on **`registrationId`**.
 `GET /v1/users/{userId}` — which destructively consumes a one-time prekey per device on every call.
 
 The **device UUID** is carried on every surface: `Submission.device_id`, `DeviceInfo.device_id`,
-`PreKeyBundleResponse.deviceId`, and (once we add it) `Envelope.sender_device_id`.
+`PreKeyBundleResponse.deviceId`, and — since Phase 2 (proto `ef3e51c`, server v0.9.4) —
+`Envelope.sender_device_id`.
 
 They picked the identifier that doesn't travel. Everything below follows from that one choice.
 
@@ -116,6 +135,15 @@ directions**. The conformance vectors could never catch this: they pin the wire,
 > through Alice's genuine encryption path — exactly what a *fixed* propagation path would emit — to
 > detonate it. See F9 and the Phase 2 sequencing constraint.
 
+> **Status (2026-07-24): FIXED in Kotlin, OPEN in Swift.** Kotlin `main` addresses every session
+> through the single `MessengerDomain.addressFor(deviceUuid)` constructor, selects the prekey bundle
+> by device UUID with no `firstOrNull()` fallback (`MessengerDomain.ensureSession`), and no longer
+> derives an address from `registrationId` at all. Swift `main` is untouched — the fix sits on
+> `swift/phase2-device-uuid`, UNVERIFIED. Residual in Kotlin: `FriendDeviceInfo.registrationId`
+> still exists (default `1`) and `rebuildDeviceMap` still copies it, but it is now a **diagnostic
+> slot that addresses nothing**. `RESET.md` calls for its deletion; do it in Phase 3 so a future
+> reader cannot mistake it for an address.
+
 ### F2 — Kotlin acks messages it failed to decrypt; the server then deletes them
 
 An ACK is a DELETE. `AckBatcher` → `message_service.delete_batch` →
@@ -198,6 +226,13 @@ the reverse lookup through `deviceMap` returns null on a cold map and callers fa
 `sourceUserId` — a *user* id in a field documented as a *device* id. **A security property asserted
 falsely.**
 
+> **Status (2026-07-24): FIXED in proto + server + Kotlin, OPEN in Swift.** `Envelope` now carries
+> `sender_device_id` (field 5) *and* keeps `sender_id` — see the Option B decision in the Phase 2
+> status block — and the server stamps both from the device-scoped JWT instead of discarding the
+> device. Kotlin's `decrypt` selects the inbound session by `sender_device_id` and **throws** if it
+> is absent rather than guessing; the candidate loop is gone; `authorDeviceId` is the address of the
+> session that decrypted. The rule is now normative in `SPEC.md` §0.10.
+
 ### F5 — Cold-start re-discovery re-fetches prekey bundles it doesn't need *(downgraded)*
 
 *(Severity revised down 2026-07-16 after review. No new endpoint. Left here because the cleanup lands
@@ -223,12 +258,26 @@ back to signed-prekey-only for *new* sessions — rare, and a well-understood Si
 break. `GET /v1/devices` is self-only (`device_repo.rs:44,81`), but that no longer matters because we
 are not adding a cross-user device-list endpoint.
 
+> **Status (2026-07-24): largely dissolved in Kotlin, as predicted.** `MessengerDomain.knownDevicesFor`
+> snapshots the devices learned for a user and `FriendshipManager` persists them into the friend
+> record, so `rebuildDeviceMap(getAccepted())` restores the map from disk on the next connect
+> (`dce6f29`). A cold start no longer burns a prekey per device just to repopulate an in-memory map.
+
 ### F6 — A friend's *new* device never receives your messages
 
 `MessageSender.kt:17-21` refreshes the device map only `if (deviceIds.isEmpty())`. Know one of
 Alice's devices, and when she links a second you keep fanning out to the stale list. `DeviceAnnounce`
 is supposed to cover this, but it is a client-to-client broadcast that can simply be missed, with no
 reconciliation against the server — which is the actual source of truth for device lists.
+
+> **Status (2026-07-24): mitigated in Kotlin, not closed.** `sendToAllDevices` still only refreshes
+> when the device list is *empty*, so the send path itself learns nothing new. What changed is that
+> the two discovery paths now actually work: F9 is fixed, so `DeviceAnnounce` carries a real device
+> list, and `decrypt` learns the sender's device (`deviceMap.putIfAbsent(senderDeviceUuid, …)`) on
+> every received message. A friend's new device is therefore learned on its first announce or its
+> first message — but a missed announce from a friend who never messages you still leaves a stale
+> list, and there is still no reconciliation against the server. Decide in Phase 3 whether that
+> residual is acceptable or wants a periodic refresh.
 
 ### F7 — Server hygiene (minor)
 
@@ -282,6 +331,13 @@ because `sendToAllDevices` sources its targets from the `deviceMap` that the pre
 
 **F9 is why F1 is currently latent.** An empty friend device list gives `rebuildDeviceMap` nothing to
 clobber. Fix F9 alone and F1 detonates. See the Phase 2 constraint.
+
+> **Status (2026-07-24): FIXED in Kotlin, OPEN in Swift.** `register` / `loginAndProvision` now record
+> the local device in the own-device registry, and `approveLink` ships the real full own-device list
+> including the newly-approved device (`aa426d5`). The sequencing constraint was honoured: F9 and the
+> device-UUID addressing landed in the same PR (#40), so the detonation the constraint warns about
+> never had a window. Own-account messages (link approval, friend sync, sync blob, sent-sync) are
+> attributed via that registry, since the sender is not in the friend graph (`f5cee66`).
 
 ---
 
@@ -370,6 +426,39 @@ Client-only. No proto change, no server change. Small, safe, independently shipp
 >   persist-failure test added. Until then, Swift is safe against the *decrypt-failure* data loss;
 >   only the rarer persist-failure path is unguarded.
 
+> **Status (2026-07-24): the Swift residual was written, and it is incomplete on the path that
+> matters most. Accepted knowingly — Phase 3 resolves it.**
+>
+> The residual above was implemented on `swift/phase2-device-uuid` (`eeb8bee`): `FriendActor.add` /
+> `.updateDevices` / `.remove` and `MessageActor.add` became throwing, `routeMessage` became
+> `async throws`, and the ack in `processEnvelope` now sits after it inside the `do` — so a persist
+> failure skips the ack. That part is correct, and was read against the code rather than trusted.
+>
+> **But `routeMessage`'s `.modelSync` case does not participate.** It calls
+> `_ = await syncManager.handleIncoming(...)`, which is non-throwing, and every layer beneath it
+> swallows write errors: `SyncManager.handleIncoming` → `Model.handleSync` → `GSet.merge` /
+> `LWWMap.merge` → `ModelStore.put`, which is still `try? await db.write` (five sites in
+> `ModelStore.swift`). So **a MODEL_SYNC whose durable write fails is still acked, and the server
+> deletes it** — the exact §0.9 rule 3 violation Phase 1 exists to close.
+>
+> This is not a corner: **MODEL_SYNC is the app's primary message type.** Every `directMessage`,
+> `pix` and `story` in `obscura-pix` rides on it. Phase 1 closed the TEXT and friend-graph paths —
+> the ones the tests exercise — and left the path the product actually uses unguarded. Kotlin is not
+> affected: its persist-then-ack covers the ORM write on the same path.
+>
+> **Decision (2026-07-24): record it, do not fix it here.** Closing it properly means plumbing
+> `throws` through `ModelStore.put` → `merge` → `handleSync` → `handleIncoming` — the ORM and CRDT
+> engine, which Phase 3 deletes outright. Hardening code that is about to be deleted is the precise
+> failure mode this reset exists to stop (§0.8), and it would be a signature change through
+> deletion-bound code that cannot be compiled on Linux. **Phase 3 resolves it by construction:** the
+> kit stops persisting model entries at all, merge logic moves to `obscura-pix`, and the only durable
+> writes left in the kit are the message store and friend graph, which already throw.
+>
+> **The cost of that choice, stated plainly:** until Phase 3 lands, Swift can lose a MODEL_SYNC
+> message on a write failure. If Phase 3 slips, revisit — the narrow version (make `ModelStore.put`
+> throwing and let the two `merge` implementations propagate) is a much smaller change than the full
+> plumbing, and is the fallback.
+
 ### Phase 2 — One identifier, everywhere
 
 The coordinated proto + server + both-kits change. Cures F1, F4, F5, F6, F9 and the `authorDeviceId`
@@ -402,6 +491,113 @@ lie together, because they are one disease.
 **Acceptance:** 0.1 goes green. `authorDeviceId` returns a device id, verified against the sender's
 actual device.
 
+> **Status (2026-07-24): landed in proto + server + Kotlin. Swift outstanding. Acceptance NOT signed off.**
+>
+> **Decision — Option B (envelope carries user *and* device).** The envelope keeps `sender_id`
+> (field 2, the sending USER) and gains `sender_device_id` (field 5, the sending DEVICE), mirroring
+> Signal's non-sealed `Envelope` (`source_service_id` + `source_device`, verified against libsignal's
+> `TextSecure.proto`). This **supersedes the Option 1 draft** (proto `2a70a5b`), which dropped
+> `sender_id`, carried the device only, and added `FriendRequest.user_id` so a new peer could still
+> be identified. Option 1 was implemented in Kotlin and then reverted: deriving the user from the
+> device requires a device→user mapping that a *brand-new* device is by definition absent from, so a
+> first message from a freshly-linked device was unattributable. Option B is the smaller change and
+> removes that race. Both fields are hints, not trust roots — now normative as `SPEC.md` §0.10.
+>
+> **What shipped:**
+> - **proto** — `ef3e51c`, PR #5, merged 2026-07-21. `Envelope.sender_device_id` added; `FriendRequest`
+>   reverted to `{ username }`.
+> - **server** — `0b0fe38`, PR #155, merged 2026-07-21, released **v0.9.4**. Stops discarding
+>   `auth_user.device_id`; `sender_device_id` threaded through the migration, `message_repo`,
+>   `message_service`, `message_pump` and the integration tests.
+> - **ObscuraKit-Kotlin** — PR #40, merged 2026-07-22. Device-UUID addressing via a single
+>   `addressFor` (F1); `decrypt` selects the session by `sender_device_id` and throws when it is
+>   missing (F4); own-device registry populated (F9); bundle selection by device UUID with the
+>   `firstOrNull()` fallback deleted; friend device UUIDs persisted so attribution survives a restart
+>   (F5); `AuthorDeviceIdTests` + `IdentityFromEnvelopeTests` added.
+> - **ObscuraKit-swift** — **not merged.** `swift/phase2-device-uuid` carries the Phase 1 residual
+>   (`eeb8bee`), the device-UUID/F9/authorDeviceId work (`0966cf8`) and the Option B adoption
+>   (`7f3cf55`), every commit self-labelled **UNVERIFIED — needs macOS compile+test** (the kit cannot
+>   build on Linux: GRDB/SQLCipher needs CommonCrypto, see 0.4). The superseded Option 1 Swift state
+>   is archived locally as `archive/2026-07-20-swift-option1-superseded`.
+>
+> **Acceptance history — both items closed 2026-07-24/25:**
+>
+> 1. ~~**Swift does not compile.**~~ macOS CI run `29925525672` (2026-07-22, `7f3cf55`) failed at
+>    *build* time with 11 `call can throw but is not marked with 'try'` errors in
+>    `ObservationTests.swift` (5) and `SyncBlobTests.swift` (6) — the fallout of the Phase 1 residual
+>    making persistence throwing, with six test files updated and two missed. Fixed in Swift PR #8;
+>    both jobs green.
+> 2. ~~**0.1 was never re-run or updated.**~~ `TwoDeviceSendTests` had not been touched since
+>    `02c7dd7`: it hand-built the `DeviceAnnounce` (it had to — F9 made the real API inert) and
+>    guarded that setup with `assumeTrue`, so it could **skip rather than fail**. Rewritten in Kotlin
+>    PR #42 to drive the real `announceDevices()` and assert unconditionally.
+
+> ## ✅ Phase 2 ACCEPTANCE SIGNED OFF (2026-07-25)
+>
+> **Criterion: "0.1 goes green. `authorDeviceId` returns a device id, verified against the sender's
+> actual device."** Met on **both** kits, by tests that run against a real server in CI — not by
+> inspection, and not by a suite that could skip.
+>
+> **Kotlin** — CI run `30138268289`, PR #42: **103 tests, 0 failures, 0 ignored.**
+> `F1 regression guard - real announceDevices, sender reconnect, both devices decrypt` passes in
+> 3.026s. Reproduced locally against a containerized server, with the mechanism visible rather than
+> inferred:
+>
+> ```
+> alice1.getOwnDevices()=2                        (F9: registry populated)
+> after announceDevices(), bob's friend store lists 2 device(s)   (F6/F9: real propagation)
+> device1 …553b… -> encrypts at address (…553b…, 1)  session=present
+> device2 …556f… -> encrypts at address (…556f…, 1)  session=present
+> distinct Signal addresses in use for Alice: 2   (F1: no collapse onto one session)
+> RESULT 'f1-c-announce': device1 decrypted=true  device2 decrypted=true
+> ```
+>
+> **Swift** — CI run `30138464166`, PR #9, on macOS against a native server. Four new tests, all
+> executed and passed (verified in the run log, not assumed from a green tick):
+> `testBothDevicesDecryptAfterSenderReconnect`, `testOwnDeviceRegistryIsPopulated`,
+> `testServerListsTwoDevicesForAlice`, `testLinkApprovalPopulatesTheApproverRegistry`, plus
+> `AuthorDeviceIdTests`:
+>
+> ```
+> PROVEN: authorDeviceId=019f96db-9283-… == bob.deviceId=019f96db-9283-…
+>         (bob.userId=019f96db-927c-… — a different UUID: the F4 lie is dead)
+> RESULT after sender reconnect: device1='swift-2dev-b-reconnect' device2='swift-2dev-b-reconnect'
+> approver registry after validateAndApproveLink: ["019f96e4-4c37-…", "019f96e4-4c5d-…"]
+> ```
+>
+> **The sender reconnect is the load-bearing step in both kits.** Without it a two-device test passes
+> vacuously — it sends while the device map is fresh from the prekey fetch, so even broken addressing
+> delivers. That is why `MultiDeviceFanOutTests` (Swift) and the old Order-2 case (Kotlin) passed
+> throughout the F1 era.
+>
+> ### Known gaps accepted at sign-off — read before starting Phase 3
+>
+> 1. **Swift MODEL_SYNC is still acked before it is durably persisted** (§0.9 rule 3). See the
+>    Phase 1 status block: the fix lives in the ORM/CRDT engine Phase 3 deletes, so it is deliberately
+>    not fixed here and Phase 3 must close it by construction.
+> 2. **Swift sends `DEVICE_LINK_APPROVAL` but cannot receive one.** `routeMessage` has no
+>    `case .deviceLinkApproval`; an inbound approval falls through `default: break`, so a newly-linked
+>    Swift device discards the p2p keypair, recovery key, friends export and the approver's
+>    own-device list. Kotlin routes it to `handleLinkApproval` → `setOwnDevices` + identity keys. This
+>    is **pre-existing, not caused by Phase 2** — F9 correctly records the *local* device, which is
+>    why the registry holds 1 and not 0; the cross-device half was never implemented. Found by CI
+>    printing `getOwnDevices()=1` where Kotlin's fixture prints 2. Device linking is on SPEC §0.3's
+>    **keep** list, so the reset will not resolve this one — it needs a decision of its own.
+> 3. **`PushTests.processPendingMessages connects if not connected` is flaky** — one failure in two
+>    full local runs (`CONNECTED` expected, `DISCONNECTED` observed), passes 4/4 in isolation and
+>    green in CI. Not a Phase 2 regression (`PushTests` is untouched by Phases 1–2), but it is a real
+>    flake on the reconnect path and will make Phase 3's "did I break it?" signal noisier.
+> 4. **Kotlin's F1 probe has no Swift equivalent.** Both kits now prove the invariant against a real
+>    server; only Kotlin additionally exercises the *adversarial* case (a friend-store device list
+>    that the old code would poison on rebuild). The Swift tests would not catch a Swift-specific
+>    regression of that exact shape.
+>
+> **One more thing the evidence turned up:** `ORMWireTests."ORM survives file-backed restart"` had
+> **never executed** since 2026-07-06. Expression-bodied with `File.delete()` last, it compiled to
+> `boolean`, and JUnit 5 silently ignores a non-void `@Test` — not skipped, not reported, absent.
+> Found by diffing source `@Test` counts against JUnit's reported count; fixed in PR #42 (it passes).
+> The general lesson for Phase 3: **trust the runner's count, not a grep.**
+
 > **Do not import Signal-Server's schema to satisfy libsignal — libsignal does not ask for it.**
 > obscura-server is a protocol implementation, not a Signal-Server clone: device UUIDs (not small
 > ints), per-device identity keys (not per-account), a client-side friend graph, no ACI/PNI, no
@@ -422,7 +618,21 @@ server.**
 
 Now execute `RESET.md`, on a foundation that is correct and has tests.
 
+**Entry condition (2026-07-25): MET.** Phase 2 acceptance is signed off on both kits with CI
+evidence (see the Phase 2 status block). The foundation is correct and, for the first time, both
+kits have tests that fail when it stops being correct.
+
+Before deleting anything, read the four gaps recorded at sign-off. Two of them shape how much the
+reset's safety net is worth: Swift still acks MODEL_SYNC before persisting it (which **this phase**
+must close by construction — verify it, do not assume it), and `PushTests` has a live flake on the
+reconnect path, so a red run during the deletion is not automatically your diff. A third — Swift
+cannot receive a `DEVICE_LINK_APPROVAL` — sits in code the reset **keeps**, so it needs its own
+decision rather than a place in the deletion inventory.
+
 - Delete the ORM, CRDT engine, query DSL, schema parser and audience-routing engine from both kits.
+- Delete the now-vestigial `FriendDeviceInfo.registrationId` (and its `rebuildDeviceMap` copy). Since
+  Phase 2 it addresses nothing; leaving a field named like an address in a struct that describes a
+  device is how the next reader re-learns F1 the hard way.
 - **Define the thin kit's API before coding it.** This is the one genuinely hard-to-reverse decision
   in the plan.
 - Move the real merge logic into pix TypeScript. It is small: append-with-dedupe, LWW-by-timestamp,
@@ -430,6 +640,11 @@ Now execute `RESET.md`, on a foundation that is correct and has tests.
 - **pix needs a test suite.** It has none; CI runs `tsc`, `eslint` and an Android release build —
   compile breaks are caught, every semantic regression is not. The reset moves the domain *into* pix,
   so pix becomes where correctness lives.
+- **Closes the Swift MODEL_SYNC ack-before-persist hole by construction** (see the Phase 1 status
+  block). Once the kit no longer persists model entries, the only durable writes left on the receive
+  path are the message store and the friend graph, both of which already throw and therefore already
+  skip the ack. Verify this when the deletion lands — it is the one §0.9 violation currently accepted
+  knowingly, and it should die with the ORM rather than quietly survive it.
 
 **Acceptance:** pix builds and runs on both platforms against the thin kits, with tests, and the
 deleted surface has no callers.

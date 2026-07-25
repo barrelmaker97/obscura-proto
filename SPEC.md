@@ -1,6 +1,6 @@
 # Obscura client contract — SPEC
 
-**Spec version: 1**
+**Spec version: 2**
 
 The prose companion to the `.proto` files and the `conformance/` vectors. The
 protos pin the **shape** of the client-to-client contract; this document and
@@ -100,6 +100,10 @@ attacker-controlled and lets a peer choose how they are labelled on screen.
 The envelope tells you *who really sent this*. The payload tells you *what they
 chose to say*. Never confuse the two.
 
+The one exception — a `FriendRequest` from someone not yet in the graph — is
+carved out in §0.10 rule 5, which also states the envelope fields this keying
+uses and their trust status.
+
 ### 0.6 The app MUST own
 
 Model semantics and validation; recipient resolution; all derived state
@@ -154,6 +158,50 @@ Normative rules for the receive loop, identical in both kits:
    durable store, not the notification, is the delivery path, and persistence
    happened-before the ack. A notification that is the *sole* delivery path for a
    message that then gets acked MUST NOT be silently droppable.
+
+### 0.10 Envelope identity: who sent this
+
+The transport `Envelope` carries **both** identifiers, each stamped by the server
+from the sender's device-scoped token and therefore unforgeable by the sender:
+
+| Field | Meaning | Signal's equivalent |
+|---|---|---|
+| `sender_id` | the sending **user** (16-byte UUID) | `Envelope.source_service_id` |
+| `sender_device_id` | the sending **device** (16-byte UUID) | `Envelope.source_device` |
+
+Both are **hints — for routing, session selection and labelling. Neither is a
+trust root.** The trust root is the Signal session: a valid MAC proves possession
+of that session's chain key, which only the sending device holds.
+
+1. A kit MUST select the inbound Signal session by `sender_device_id`. Signal
+   sessions are pairwise device-to-device and a `SignalMessage` carries no sender
+   identity, so nothing else on the wire can choose the session. An envelope whose
+   `sender_device_id` is absent or not 16 bytes is an **error**: a kit MUST NOT
+   guess a device, iterate candidate sessions, or fall back to a default device id.
+2. A kit MUST key its local Signal address (`ProtocolAddress`) on the **device
+   UUID**. `registrationId` MUST NOT be used as an addressing identifier: it is
+   carried on exactly one wire surface (`PreKeyBundleResponse`), while the device
+   UUID is carried on all of them. The address is a purely local store key and is
+   never transmitted.
+3. A kit MUST select a peer's prekey bundle by device UUID, with **no fallback**
+   to an arbitrary bundle. Encrypting once under one device's keys and fanning that
+   ciphertext to every device of the user is the defect this rule exists to prevent
+   (`PLAN.md` F1): exactly one device can read it and the rest fail silently.
+4. `authorDeviceId` MUST be derived from the **address of the session that
+   decrypted** the message — never from a wire field. A malicious server that lies
+   about `sender_device_id` can cause a decryption failure, but can never forge an
+   attribution.
+5. The display name MUST come from the local friend graph keyed on the
+   authenticated sender (§0.5). The **friend-request bootstrap** is the single
+   exception: a `FriendRequest` arrives from a user who is not yet in the graph, so
+   its payload `username` is the only name available. It is attacker-chosen and MUST
+   be treated as a request-time label, never as an authenticated identity, and MUST
+   NOT be persisted as the friend's name once the friendship is accepted.
+6. A kit that already knows which user owns `sender_device_id` (from its friend
+   graph or a prekey fetch) SHOULD cross-check `sender_id` against it and log a
+   mismatch as a security event. Neither kit does this today; the residual exposure
+   is a **mis-labelled** message, never a forged one, because the content is
+   authenticated by a session the server does not hold.
 
 ---
 
@@ -406,6 +454,17 @@ model's confidentiality at runtime.
 
 ## Changelog
 
+- **v2** — §0 **The kit boundary** (what a kit is, the proto-is-the-boundary rule,
+  MUST/MUST NOT lists, sender identity from the friend graph) — governs every other
+  section. §0.9 **Receive: persist-then-ack** (an ACK is a DELETE; decrypt → persist
+  → notify → ack), implemented in Phase 1. §0.10 **Envelope identity** (`sender_id`
+  + `sender_device_id` as hints, device-UUID session addressing and bundle
+  selection, `authorDeviceId` from the decrypting session), implemented in Phase 2
+  alongside `Envelope.sender_device_id`. §§1, 2.1–2.3 and 4 marked SUPERSEDED,
+  pending removal in Phase 3. Not vector-backed: §0 is a boundary rule reviewable by
+  reading a kit's field accesses; §0.9 and §0.10 are receive-loop behavior, verified
+  by per-kit integration tests (`AckSemanticsTests`, `AuthorDeviceIdTests`,
+  `TwoDeviceSendTests`).
 - **v1** — Initial spec. §1 Routing (audience modes, fail-loud rule, canonical
   `conversationId`, `DIRECT_ROUTING_UNRESOLVED`), backed by `routing.json`.
   §2 Merge (GSet union, LWW total order with `authorDeviceId` tie-break,
