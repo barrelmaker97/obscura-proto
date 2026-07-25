@@ -8,6 +8,22 @@ Companion documents:
 
 This file answers *in what order*, and *how we know each step worked*.
 
+## Status at a glance (2026-07-24)
+
+| Phase | State | Where |
+|---|---|---|
+| 0 — make the truth observable | **Done** (Kotlin); Swift verification scoped to a libsignal-level probe | Kotlin `main` (`02c7dd7`); Swift `verify/swift-addressing-probe` (`a002a62`, unmerged) |
+| 1 — stop the data loss | **Kotlin done + verified.** Swift's primary invariant was already satisfied; its persist-failure residual is written but unverified | Kotlin `main` (`c196d15`); Swift `swift/phase2-device-uuid` (`eeb8bee`, unmerged) |
+| 2 — one identifier, everywhere | **Landed in proto + server + Kotlin. Swift outstanding. Acceptance NOT signed off** (see the Phase 2 status block) | proto `main` (`ef3e51c`, PR #5); server `main` (`0b0fe38`, PR #155, released v0.9.4); Kotlin `main` (PR #40); Swift `swift/phase2-device-uuid` (unmerged, UNVERIFIED) |
+| 3 — the reset (`RESET.md`) | **Not started.** The ORM, CRDT engine, query DSL, schema parser and routing engine are all still present in both kits; `conformance/{routing,merge,schema}.json` still shipped | — |
+| 4 — push + NSE | **Not started** | — |
+
+**The critical path is Swift.** Kotlin now addresses sessions by device UUID and
+reads `Envelope.sender_device_id`; Swift `main` still defaults `senderRegId: 1`, so
+the two kits disagree on session addressing in both directions until the Swift
+branch is compiled, tested on macOS and merged. Phase 3 should not start on top of a
+half-landed Phase 2.
+
 ---
 
 ## Why the reset is not first
@@ -32,7 +48,8 @@ Both kits key their Signal sessions on **`registrationId`**.
 `GET /v1/users/{userId}` — which destructively consumes a one-time prekey per device on every call.
 
 The **device UUID** is carried on every surface: `Submission.device_id`, `DeviceInfo.device_id`,
-`PreKeyBundleResponse.deviceId`, and (once we add it) `Envelope.sender_device_id`.
+`PreKeyBundleResponse.deviceId`, and — since Phase 2 (proto `ef3e51c`, server v0.9.4) —
+`Envelope.sender_device_id`.
 
 They picked the identifier that doesn't travel. Everything below follows from that one choice.
 
@@ -116,6 +133,15 @@ directions**. The conformance vectors could never catch this: they pin the wire,
 > through Alice's genuine encryption path — exactly what a *fixed* propagation path would emit — to
 > detonate it. See F9 and the Phase 2 sequencing constraint.
 
+> **Status (2026-07-24): FIXED in Kotlin, OPEN in Swift.** Kotlin `main` addresses every session
+> through the single `MessengerDomain.addressFor(deviceUuid)` constructor, selects the prekey bundle
+> by device UUID with no `firstOrNull()` fallback (`MessengerDomain.ensureSession`), and no longer
+> derives an address from `registrationId` at all. Swift `main` is untouched — the fix sits on
+> `swift/phase2-device-uuid`, UNVERIFIED. Residual in Kotlin: `FriendDeviceInfo.registrationId`
+> still exists (default `1`) and `rebuildDeviceMap` still copies it, but it is now a **diagnostic
+> slot that addresses nothing**. `RESET.md` calls for its deletion; do it in Phase 3 so a future
+> reader cannot mistake it for an address.
+
 ### F2 — Kotlin acks messages it failed to decrypt; the server then deletes them
 
 An ACK is a DELETE. `AckBatcher` → `message_service.delete_batch` →
@@ -198,6 +224,13 @@ the reverse lookup through `deviceMap` returns null on a cold map and callers fa
 `sourceUserId` — a *user* id in a field documented as a *device* id. **A security property asserted
 falsely.**
 
+> **Status (2026-07-24): FIXED in proto + server + Kotlin, OPEN in Swift.** `Envelope` now carries
+> `sender_device_id` (field 5) *and* keeps `sender_id` — see the Option B decision in the Phase 2
+> status block — and the server stamps both from the device-scoped JWT instead of discarding the
+> device. Kotlin's `decrypt` selects the inbound session by `sender_device_id` and **throws** if it
+> is absent rather than guessing; the candidate loop is gone; `authorDeviceId` is the address of the
+> session that decrypted. The rule is now normative in `SPEC.md` §0.10.
+
 ### F5 — Cold-start re-discovery re-fetches prekey bundles it doesn't need *(downgraded)*
 
 *(Severity revised down 2026-07-16 after review. No new endpoint. Left here because the cleanup lands
@@ -223,12 +256,26 @@ back to signed-prekey-only for *new* sessions — rare, and a well-understood Si
 break. `GET /v1/devices` is self-only (`device_repo.rs:44,81`), but that no longer matters because we
 are not adding a cross-user device-list endpoint.
 
+> **Status (2026-07-24): largely dissolved in Kotlin, as predicted.** `MessengerDomain.knownDevicesFor`
+> snapshots the devices learned for a user and `FriendshipManager` persists them into the friend
+> record, so `rebuildDeviceMap(getAccepted())` restores the map from disk on the next connect
+> (`dce6f29`). A cold start no longer burns a prekey per device just to repopulate an in-memory map.
+
 ### F6 — A friend's *new* device never receives your messages
 
 `MessageSender.kt:17-21` refreshes the device map only `if (deviceIds.isEmpty())`. Know one of
 Alice's devices, and when she links a second you keep fanning out to the stale list. `DeviceAnnounce`
 is supposed to cover this, but it is a client-to-client broadcast that can simply be missed, with no
 reconciliation against the server — which is the actual source of truth for device lists.
+
+> **Status (2026-07-24): mitigated in Kotlin, not closed.** `sendToAllDevices` still only refreshes
+> when the device list is *empty*, so the send path itself learns nothing new. What changed is that
+> the two discovery paths now actually work: F9 is fixed, so `DeviceAnnounce` carries a real device
+> list, and `decrypt` learns the sender's device (`deviceMap.putIfAbsent(senderDeviceUuid, …)`) on
+> every received message. A friend's new device is therefore learned on its first announce or its
+> first message — but a missed announce from a friend who never messages you still leaves a stale
+> list, and there is still no reconciliation against the server. Decide in Phase 3 whether that
+> residual is acceptable or wants a periodic refresh.
 
 ### F7 — Server hygiene (minor)
 
@@ -282,6 +329,13 @@ because `sendToAllDevices` sources its targets from the `deviceMap` that the pre
 
 **F9 is why F1 is currently latent.** An empty friend device list gives `rebuildDeviceMap` nothing to
 clobber. Fix F9 alone and F1 detonates. See the Phase 2 constraint.
+
+> **Status (2026-07-24): FIXED in Kotlin, OPEN in Swift.** `register` / `loginAndProvision` now record
+> the local device in the own-device registry, and `approveLink` ships the real full own-device list
+> including the newly-approved device (`aa426d5`). The sequencing constraint was honoured: F9 and the
+> device-UUID addressing landed in the same PR (#40), so the detonation the constraint warns about
+> never had a window. Own-account messages (link approval, friend sync, sync blob, sent-sync) are
+> attributed via that registry, since the sender is not in the friend graph (`f5cee66`).
 
 ---
 
@@ -402,6 +456,46 @@ lie together, because they are one disease.
 **Acceptance:** 0.1 goes green. `authorDeviceId` returns a device id, verified against the sender's
 actual device.
 
+> **Status (2026-07-24): landed in proto + server + Kotlin. Swift outstanding. Acceptance NOT signed off.**
+>
+> **Decision — Option B (envelope carries user *and* device).** The envelope keeps `sender_id`
+> (field 2, the sending USER) and gains `sender_device_id` (field 5, the sending DEVICE), mirroring
+> Signal's non-sealed `Envelope` (`source_service_id` + `source_device`, verified against libsignal's
+> `TextSecure.proto`). This **supersedes the Option 1 draft** (proto `2a70a5b`), which dropped
+> `sender_id`, carried the device only, and added `FriendRequest.user_id` so a new peer could still
+> be identified. Option 1 was implemented in Kotlin and then reverted: deriving the user from the
+> device requires a device→user mapping that a *brand-new* device is by definition absent from, so a
+> first message from a freshly-linked device was unattributable. Option B is the smaller change and
+> removes that race. Both fields are hints, not trust roots — now normative as `SPEC.md` §0.10.
+>
+> **What shipped:**
+> - **proto** — `ef3e51c`, PR #5, merged 2026-07-21. `Envelope.sender_device_id` added; `FriendRequest`
+>   reverted to `{ username }`.
+> - **server** — `0b0fe38`, PR #155, merged 2026-07-21, released **v0.9.4**. Stops discarding
+>   `auth_user.device_id`; `sender_device_id` threaded through the migration, `message_repo`,
+>   `message_service`, `message_pump` and the integration tests.
+> - **ObscuraKit-Kotlin** — PR #40, merged 2026-07-22. Device-UUID addressing via a single
+>   `addressFor` (F1); `decrypt` selects the session by `sender_device_id` and throws when it is
+>   missing (F4); own-device registry populated (F9); bundle selection by device UUID with the
+>   `firstOrNull()` fallback deleted; friend device UUIDs persisted so attribution survives a restart
+>   (F5); `AuthorDeviceIdTests` + `IdentityFromEnvelopeTests` added.
+> - **ObscuraKit-swift** — **not merged.** `swift/phase2-device-uuid` carries the Phase 1 residual
+>   (`eeb8bee`), the device-UUID/F9/authorDeviceId work (`0966cf8`) and the Option B adoption
+>   (`7f3cf55`), every commit self-labelled **UNVERIFIED — needs macOS compile+test** (the kit cannot
+>   build on Linux: GRDB/SQLCipher needs CommonCrypto, see 0.4). The superseded Option 1 Swift state
+>   is archived locally as `archive/2026-07-20-swift-option1-superseded`.
+>
+> **Why acceptance is not signed off — two open items:**
+> 1. **Swift has not been compiled, let alone tested.** Until it merges, the two kits disagree on
+>    session addressing in both directions, which is the F1/F4 disease itself, half-cured.
+> 2. **0.1 was never re-run or updated.** `TwoDeviceSendTests` has not been touched since `02c7dd7`
+>    (2026-07-14). Its `F1 mechanism probe` still hand-builds a `DeviceAnnounce` because propagation
+>    was dead at the time, and it guards that setup with `assumeTrue` — so if the precondition is not
+>    met the test **skips rather than fails**. Its docstring still describes F9 as unfixed and F1 as
+>    latent, which is no longer true. Now that F9 is fixed the probe should drive the *real*
+>    `announceDevices()` path and assert unconditionally. Until that is done and green, "0.1 goes
+>    green" remains unproven, and a skipped test is not a passing one.
+
 > **Do not import Signal-Server's schema to satisfy libsignal — libsignal does not ask for it.**
 > obscura-server is a protocol implementation, not a Signal-Server clone: device UUIDs (not small
 > ints), per-device identity keys (not per-account), a client-side friend graph, no ACI/PNI, no
@@ -422,7 +516,15 @@ server.**
 
 Now execute `RESET.md`, on a foundation that is correct and has tests.
 
+**Entry condition (2026-07-24): not yet met.** Phase 2 is half-landed — Swift is unmerged and
+unverified, and 0.1 has not been re-run against the fixed code. Starting a ten-thousand-line deletion
+while one kit still addresses sessions by `registrationId` reintroduces exactly the problem this plan
+sequenced around: debugging a protocol bug through the diff.
+
 - Delete the ORM, CRDT engine, query DSL, schema parser and audience-routing engine from both kits.
+- Delete the now-vestigial `FriendDeviceInfo.registrationId` (and its `rebuildDeviceMap` copy). Since
+  Phase 2 it addresses nothing; leaving a field named like an address in a struct that describes a
+  device is how the next reader re-learns F1 the hard way.
 - **Define the thin kit's API before coding it.** This is the one genuinely hard-to-reverse decision
   in the plan.
 - Move the real merge logic into pix TypeScript. It is small: append-with-dedupe, LWW-by-timestamp,
