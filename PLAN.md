@@ -14,15 +14,18 @@ This file answers *in what order*, and *how we know each step worked*.
 |---|---|---|
 | 0 — make the truth observable | **Done** (Kotlin); Swift verification scoped to a libsignal-level probe | Kotlin `main` (`02c7dd7`); Swift `verify/swift-addressing-probe` (`a002a62`, unmerged) |
 | 1 — stop the data loss | **Kotlin done + verified.** Swift's primary invariant was already satisfied; its persist-failure residual is written but unverified | Kotlin `main` (`c196d15`); Swift `swift/phase2-device-uuid` (`eeb8bee`, unmerged) |
-| 2 — one identifier, everywhere | **Landed in proto + server + Kotlin. Swift outstanding. Acceptance NOT signed off** (see the Phase 2 status block) | proto `main` (`ef3e51c`, PR #5); server `main` (`0b0fe38`, PR #155, released v0.9.4); Kotlin `main` (PR #40); Swift `swift/phase2-device-uuid` (unmerged, UNVERIFIED) |
+| 2 — one identifier, everywhere | **Landed in proto + server + Kotlin. Swift outstanding. Acceptance NOT signed off** (see the Phase 2 status block) | proto `main` (`ef3e51c`, PR #5); server `main` (`0b0fe38`, PR #155, released v0.9.4); Kotlin `main` (PR #40); Swift PR #6 (**red — does not build on macOS CI**) |
 | 3 — the reset (`RESET.md`) | **Not started.** The ORM, CRDT engine, query DSL, schema parser and routing engine are all still present in both kits; `conformance/{routing,merge,schema}.json` still shipped | — |
 | 4 — push + NSE | **Not started** | — |
 
-**The critical path is Swift.** Kotlin now addresses sessions by device UUID and
-reads `Envelope.sender_device_id`; Swift `main` still defaults `senderRegId: 1`, so
-the two kits disagree on session addressing in both directions until the Swift
-branch is compiled, tested on macOS and merged. Phase 3 should not start on top of a
-half-landed Phase 2.
+**The critical path is Swift, and it is red.** Kotlin now addresses sessions by device
+UUID and reads `Envelope.sender_device_id`; Swift `main` still defaults
+`senderRegId: 1`, so the two kits disagree on session addressing in both directions.
+Swift PR #6 carries the fix but **fails to build on macOS CI** — 11 missing-`try`
+errors in two test files, the fallout of making persistence throwing. Fixing those is
+the single highest-value next action: it is mechanical, and until the build is green
+not one line of the Swift Phase 1/2 logic has actually been exercised. Phase 3 should
+not start on top of a half-landed Phase 2.
 
 ---
 
@@ -486,8 +489,17 @@ actual device.
 >   is archived locally as `archive/2026-07-20-swift-option1-superseded`.
 >
 > **Why acceptance is not signed off — two open items:**
-> 1. **Swift has not been compiled, let alone tested.** Until it merges, the two kits disagree on
->    session addressing in both directions, which is the F1/F4 disease itself, half-cured.
+> 1. **Swift does not compile.** PR #6 (`swift/phase2-device-uuid`) is open and macOS CI *has* run
+>    it — run `29925525672`, 2026-07-22, against `7f3cf55` — and **both jobs fail at build time**.
+>    The commits are labelled UNVERIFIED because they were written on a Linux box that cannot build
+>    the kit; CI is the oracle that can, and its verdict is 11 errors, every one
+>    `call can throw but is not marked with 'try'`, in two test files:
+>    `Tests/ScenarioTests/ObservationTests.swift` (5) and `Tests/ScenarioTests/SyncBlobTests.swift`
+>    (6). That is exactly the expected fallout of the Phase 1 residual — making the persistence path
+>    throwing propagates `try` to its call sites — and it is mechanical to fix. Until it merges, the
+>    two kits disagree on session addressing in both directions, which is the F1/F4 disease itself,
+>    half-cured. **Nothing about the Swift *logic* has been validated yet: the build fails before any
+>    test runs.**
 > 2. **0.1 was never re-run or updated.** `TwoDeviceSendTests` has not been touched since `02c7dd7`
 >    (2026-07-14). Its `F1 mechanism probe` still hand-builds a `DeviceAnnounce` because propagation
 >    was dead at the time, and it guards that setup with `assumeTrue` — so if the precondition is not
