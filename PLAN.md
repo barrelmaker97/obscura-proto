@@ -5,6 +5,7 @@
 Companion documents:
 - [`SPEC.md`](SPEC.md) — the normative contract. §0 defines the kit boundary.
 - [`RESET.md`](RESET.md) — the deletion inventory (what comes out, with evidence per line).
+- [`KIT_API.md`](KIT_API.md) — the thin kit API this phase deletes *towards* (proposal).
 
 This file answers *in what order*, and *how we know each step worked*.
 
@@ -742,17 +743,32 @@ reconnect path, so a red run during the deletion is not automatically your diff.
 cannot receive a `DEVICE_LINK_APPROVAL` — sits in code the reset **keeps**, so it needs its own
 decision rather than a place in the deletion inventory.
 
+- **Define the thin kit's API first — drafted in [`KIT_API.md`](KIT_API.md).** It is an **inbox**,
+  not an event stream: any design where the kit hands a payload to the app and then acks puts a
+  server-side DELETE ahead of the app's durable write, across an async bridge, on a path where the
+  app may not be running. That is the Phase 1 data-loss bug rebuilt in both kits at once.
+- **`obscura-pix` must gain a durable store.** It has none today — no AsyncStorage, no MMKV, no
+  SQLite; its entire persistence *is* the kit's ORM, with zustand rebuilt from `allEntries` on every
+  event. Deleting the ORM does not move pix's storage, it removes it. This is the largest single
+  piece of work in the phase and it is absent from `RESET.md`, whose inventory only lists what comes
+  *out* of the kits.
 - Delete the ORM, CRDT engine, query DSL, schema parser and audience-routing engine from both kits.
 - Delete the now-vestigial `FriendDeviceInfo.registrationId` (and its `rebuildDeviceMap` copy). Since
   Phase 2 it addresses nothing; leaving a field named like an address in a struct that describes a
   device is how the next reader re-learns F1 the hard way.
+- **Port `conformance/merge.json` into pix's test suite** rather than deleting it. The APPEND/REPLACE
+  semantics are not going away — they are changing address — and those vectors are the only
+  executable statement of them that exists.
 - **Define the thin kit's API before coding it.** This is the one genuinely hard-to-reverse decision
   in the plan.
 - Move the real merge logic into pix TypeScript. It is small: append-with-dedupe, LWW-by-timestamp,
   TTL. `pix.viewedAt` is a viewed-receipt wearing a CRDT costume.
-- **pix needs a test suite.** It has none; CI runs `tsc`, `eslint` and an Android release build —
-  compile breaks are caught, every semantic regression is not. The reset moves the domain *into* pix,
-  so pix becomes where correctness lives.
+- **pix's test suite is a PREREQUISITE, not a deliverable** (decided 2026-07-25). It has none; CI
+  runs `tsc`, `eslint` and an Android release build — compile breaks are caught, every semantic
+  regression is not. The reset moves the domain from the two repos holding 722 executed tests
+  (Kotlin 442, Swift 280) into the repo holding zero. Write those tests **while the kits still
+  implement the behaviour**, because that is the only window in which a working oracle exists to
+  test against; once the kit code is deleted there is nothing left to check the TypeScript against.
 - **Closes the Swift MODEL_SYNC ack-before-persist hole by construction** (see the Phase 1 status
   block). Once the kit no longer persists model entries, the only durable writes left on the receive
   path are the message store and the friend graph, both of which already throw and therefore already
