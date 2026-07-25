@@ -8,12 +8,12 @@ Companion documents:
 
 This file answers *in what order*, and *how we know each step worked*.
 
-## Status at a glance (2026-07-24)
+## Status at a glance (2026-07-25)
 
 | Phase | State | Where |
 |---|---|---|
-| 0 — make the truth observable | **Done** (Kotlin); Swift verification scoped to a libsignal-level probe | Kotlin `main` (`02c7dd7`); Swift `verify/swift-addressing-probe` (`a002a62`, unmerged) |
-| 1 — stop the data loss | **Kotlin done + verified.** Swift's primary invariant was already satisfied; its persist-failure residual is written but unverified | Kotlin `main` (`c196d15`); Swift `swift/phase2-device-uuid` (`eeb8bee`, unmerged) |
+| 0 — make the truth observable | **Done, both kits.** Kotlin's diagnostics landed first; Swift's libsignal-level `AddressingProbe` reached `main` with the Phase 2 merge | Kotlin `main` (`02c7dd7`); Swift `main` (`a002a62`) |
+| 1 — stop the data loss | **Done, both kits — with one accepted exception.** Swift's persist-failure residual is merged and verified; **MODEL_SYNC is still acked before persistence** (see the Phase 1 status block — deferred to Phase 3 by decision) | Kotlin `main` (`c196d15`); Swift `main` (`eeb8bee`, via PR #6) |
 | 2 — one identifier, everywhere | **DONE — acceptance signed off 2026-07-25**, proven by tests on both kits against a real server. Four known gaps recorded at sign-off | proto `main` (`ef3e51c`, PR #5); server `main` (`0b0fe38`, PR #155, v0.9.4); Kotlin `main` (PRs #40, #42); Swift (PRs #6, #8, #9) |
 | 3 — the reset (`RESET.md`) | **Not started.** The ORM, CRDT engine, query DSL, schema parser and routing engine are all still present in both kits; `conformance/{routing,merge,schema}.json` still shipped | — |
 | 4 — push + NSE | **Not started** | — |
@@ -135,14 +135,16 @@ directions**. The conformance vectors could never catch this: they pin the wire,
 > through Alice's genuine encryption path — exactly what a *fixed* propagation path would emit — to
 > detonate it. See F9 and the Phase 2 sequencing constraint.
 
-> **Status (2026-07-24): FIXED in Kotlin, OPEN in Swift.** Kotlin `main` addresses every session
+> **Status (2026-07-25): FIXED in BOTH kits.** Kotlin `main` addresses every session
 > through the single `MessengerDomain.addressFor(deviceUuid)` constructor, selects the prekey bundle
 > by device UUID with no `firstOrNull()` fallback (`MessengerDomain.ensureSession`), and no longer
-> derives an address from `registrationId` at all. Swift `main` is untouched — the fix sits on
-> `swift/phase2-device-uuid`, UNVERIFIED. Residual in Kotlin: `FriendDeviceInfo.registrationId`
-> still exists (default `1`) and `rebuildDeviceMap` still copies it, but it is now a **diagnostic
-> slot that addresses nothing**. `RESET.md` calls for its deletion; do it in Phase 3 so a future
-> reader cannot mistake it for an address.
+> derives an address from `registrationId` at all. **Swift `main` does the same as of PR #6**
+> (merged 2026-07-25), proven by `TwoDeviceSendTests` on macOS CI against a real server.
+>
+> Residual in Kotlin: `FriendDeviceInfo.registrationId` still exists (default `1`) and
+> `rebuildDeviceMap` still copies it, but it is now a **diagnostic slot that addresses nothing**.
+> `RESET.md` calls for its deletion; do it in Phase 3 so a future reader cannot mistake it for an
+> address.
 
 ### F2 — Kotlin acks messages it failed to decrypt; the server then deletes them
 
@@ -226,7 +228,7 @@ the reverse lookup through `deviceMap` returns null on a cold map and callers fa
 `sourceUserId` — a *user* id in a field documented as a *device* id. **A security property asserted
 falsely.**
 
-> **Status (2026-07-24): FIXED in proto + server + Kotlin, OPEN in Swift.** `Envelope` now carries
+> **Status (2026-07-25): FIXED in proto + server + BOTH kits.** `Envelope` now carries
 > `sender_device_id` (field 5) *and* keeps `sender_id` — see the Option B decision in the Phase 2
 > status block — and the server stamps both from the device-scoped JWT instead of discarding the
 > device. Kotlin's `decrypt` selects the inbound session by `sender_device_id` and **throws** if it
@@ -332,12 +334,24 @@ because `sendToAllDevices` sources its targets from the `deviceMap` that the pre
 **F9 is why F1 is currently latent.** An empty friend device list gives `rebuildDeviceMap` nothing to
 clobber. Fix F9 alone and F1 detonates. See the Phase 2 constraint.
 
-> **Status (2026-07-24): FIXED in Kotlin, OPEN in Swift.** `register` / `loginAndProvision` now record
+> **Status (2026-07-25): FIXED in Kotlin; the LOCAL half fixed in Swift, the cross-device half missing.**
+> `register` / `loginAndProvision` now record
 > the local device in the own-device registry, and `approveLink` ships the real full own-device list
 > including the newly-approved device (`aa426d5`). The sequencing constraint was honoured: F9 and the
 > device-UUID addressing landed in the same PR (#40), so the detonation the constraint warns about
 > never had a window. Own-account messages (link approval, friend sync, sync blob, sent-sync) are
 > attributed via that registry, since the sender is not in the friend graph (`f5cee66`).
+>
+> **Swift is only half done, and the half that is missing was invisible until CI printed it.** Swift
+> records the *local* device on `register` / `loginAndProvision`, and `validateAndApproveLink` adds
+> the new device before `approveLink` ships the list — so the **approver** ends up with both devices
+> (pinned by `TwoDeviceSendTests.testLinkApprovalPopulatesTheApproverRegistry`). But the **approvee**
+> gets nothing: Swift's `routeMessage` has **no `case .deviceLinkApproval`**, so an inbound approval
+> falls through `default: break` and the newly-linked device discards the p2p keypair, the recovery
+> key, the friends export and the device list. Kotlin routes it to `handleLinkApproval`
+> → `setOwnDevices` + identity keys. Found because Swift CI printed `getOwnDevices()=1` where the
+> Kotlin fixture prints 2. **This is in code SPEC §0.3 says a kit KEEPS, so Phase 3 will not resolve
+> it** — it needs its own decision.
 
 ---
 
@@ -425,6 +439,10 @@ Client-only. No proto change, no server change. Small, safe, independently shipp
 >   **not** being done blind. Deferred to a macOS session / CI, where it must be compiled and a
 >   persist-failure test added. Until then, Swift is safe against the *decrypt-failure* data loss;
 >   only the rarer persist-failure path is unguarded.
+>   **(Closed 2026-07-25: merged via Swift PR #6 and compiled + run by macOS CI. The persist-failure
+>   *test* was not added — the invariant is enforced structurally by `routeMessage` being `throws`
+>   with the ack after it, and is covered indirectly by the two-device test asserting both devices
+>   persisted what they acked. A fault-injection test remains worth having.)**
 
 > **Status (2026-07-24): the Swift residual was written, and it is incomplete on the path that
 > matters most. Accepted knowingly — Phase 3 resolves it.**
@@ -514,11 +532,16 @@ actual device.
 >   missing (F4); own-device registry populated (F9); bundle selection by device UUID with the
 >   `firstOrNull()` fallback deleted; friend device UUIDs persisted so attribution survives a restart
 >   (F5); `AuthorDeviceIdTests` + `IdentityFromEnvelopeTests` added.
-> - **ObscuraKit-swift** — **not merged.** `swift/phase2-device-uuid` carries the Phase 1 residual
->   (`eeb8bee`), the device-UUID/F9/authorDeviceId work (`0966cf8`) and the Option B adoption
->   (`7f3cf55`), every commit self-labelled **UNVERIFIED — needs macOS compile+test** (the kit cannot
->   build on Linux: GRDB/SQLCipher needs CommonCrypto, see 0.4). The superseded Option 1 Swift state
->   is archived locally as `archive/2026-07-20-swift-option1-superseded`.
+> - **ObscuraKit-swift** — PRs #6, #8, #9, merged 2026-07-25. The Phase 1 residual (`eeb8bee`), the
+>   device-UUID/F9/authorDeviceId work (`0966cf8`) and the Option B adoption (`7f3cf55`), plus the
+>   build fix (#8) and the acceptance tests (#9). Every original commit was self-labelled
+>   **UNVERIFIED — needs macOS compile+test**, because the kit cannot build on Linux
+>   (GRDB/SQLCipher needs CommonCrypto, see 0.4). Those labels are now historical: macOS CI compiled
+>   and ran them. **It took a build fix to get there** — the residual made four persistence methods
+>   throwing and updated six test files but missed two, so the first CI run failed with 11
+>   `call can throw but is not marked with 'try'` errors and *no test executed at all*. Worth
+>   remembering as the general shape of "written but unverified": the first thing CI found was not a
+>   logic error but that the code did not compile.
 >
 > **Acceptance history — both items closed 2026-07-24/25:**
 >
