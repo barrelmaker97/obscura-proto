@@ -14,18 +14,17 @@ This file answers *in what order*, and *how we know each step worked*.
 |---|---|---|
 | 0 — make the truth observable | **Done** (Kotlin); Swift verification scoped to a libsignal-level probe | Kotlin `main` (`02c7dd7`); Swift `verify/swift-addressing-probe` (`a002a62`, unmerged) |
 | 1 — stop the data loss | **Kotlin done + verified.** Swift's primary invariant was already satisfied; its persist-failure residual is written but unverified | Kotlin `main` (`c196d15`); Swift `swift/phase2-device-uuid` (`eeb8bee`, unmerged) |
-| 2 — one identifier, everywhere | **Landed in proto + server + Kotlin. Swift outstanding. Acceptance NOT signed off** (see the Phase 2 status block) | proto `main` (`ef3e51c`, PR #5); server `main` (`0b0fe38`, PR #155, released v0.9.4); Kotlin `main` (PR #40); Swift PR #6 (**red — does not build on macOS CI**) |
+| 2 — one identifier, everywhere | **DONE — acceptance signed off 2026-07-25**, proven by tests on both kits against a real server. Four known gaps recorded at sign-off | proto `main` (`ef3e51c`, PR #5); server `main` (`0b0fe38`, PR #155, v0.9.4); Kotlin `main` (PRs #40, #42); Swift (PRs #6, #8, #9) |
 | 3 — the reset (`RESET.md`) | **Not started.** The ORM, CRDT engine, query DSL, schema parser and routing engine are all still present in both kits; `conformance/{routing,merge,schema}.json` still shipped | — |
 | 4 — push + NSE | **Not started** | — |
 
-**The critical path is Swift, and it is red.** Kotlin now addresses sessions by device
-UUID and reads `Envelope.sender_device_id`; Swift `main` still defaults
-`senderRegId: 1`, so the two kits disagree on session addressing in both directions.
-Swift PR #6 carries the fix but **fails to build on macOS CI** — 11 missing-`try`
-errors in two test files, the fallout of making persistence throwing. Fixing those is
-the single highest-value next action: it is mechanical, and until the build is green
-not one line of the Swift Phase 1/2 logic has actually been exercised. Phase 3 should
-not start on top of a half-landed Phase 2.
+**Phase 3 is now unblocked.** Both kits address Signal sessions by device UUID, both
+read `Envelope.sender_device_id`, and both prove it with tests that run against a real
+server in CI. Start Phase 3 by reading the four gaps recorded at sign-off in the
+Phase 2 status block — two of them (Swift MODEL_SYNC ack-before-persist; the
+`PushTests` flake) directly affect how much the reset's "did I break it?" signal can
+be trusted, and one (Swift cannot receive a `DEVICE_LINK_APPROVAL`) is in code the
+reset **keeps**, so it will not resolve itself.
 
 ---
 
@@ -521,25 +520,83 @@ actual device.
 >   build on Linux: GRDB/SQLCipher needs CommonCrypto, see 0.4). The superseded Option 1 Swift state
 >   is archived locally as `archive/2026-07-20-swift-option1-superseded`.
 >
-> **Why acceptance is not signed off — two open items:**
-> 1. **Swift does not compile.** PR #6 (`swift/phase2-device-uuid`) is open and macOS CI *has* run
->    it — run `29925525672`, 2026-07-22, against `7f3cf55` — and **both jobs fail at build time**.
->    The commits are labelled UNVERIFIED because they were written on a Linux box that cannot build
->    the kit; CI is the oracle that can, and its verdict is 11 errors, every one
->    `call can throw but is not marked with 'try'`, in two test files:
->    `Tests/ScenarioTests/ObservationTests.swift` (5) and `Tests/ScenarioTests/SyncBlobTests.swift`
->    (6). That is exactly the expected fallout of the Phase 1 residual — making the persistence path
->    throwing propagates `try` to its call sites — and it is mechanical to fix. Until it merges, the
->    two kits disagree on session addressing in both directions, which is the F1/F4 disease itself,
->    half-cured. **Nothing about the Swift *logic* has been validated yet: the build fails before any
->    test runs.**
-> 2. **0.1 was never re-run or updated.** `TwoDeviceSendTests` has not been touched since `02c7dd7`
->    (2026-07-14). Its `F1 mechanism probe` still hand-builds a `DeviceAnnounce` because propagation
->    was dead at the time, and it guards that setup with `assumeTrue` — so if the precondition is not
->    met the test **skips rather than fails**. Its docstring still describes F9 as unfixed and F1 as
->    latent, which is no longer true. Now that F9 is fixed the probe should drive the *real*
->    `announceDevices()` path and assert unconditionally. Until that is done and green, "0.1 goes
->    green" remains unproven, and a skipped test is not a passing one.
+> **Acceptance history — both items closed 2026-07-24/25:**
+>
+> 1. ~~**Swift does not compile.**~~ macOS CI run `29925525672` (2026-07-22, `7f3cf55`) failed at
+>    *build* time with 11 `call can throw but is not marked with 'try'` errors in
+>    `ObservationTests.swift` (5) and `SyncBlobTests.swift` (6) — the fallout of the Phase 1 residual
+>    making persistence throwing, with six test files updated and two missed. Fixed in Swift PR #8;
+>    both jobs green.
+> 2. ~~**0.1 was never re-run or updated.**~~ `TwoDeviceSendTests` had not been touched since
+>    `02c7dd7`: it hand-built the `DeviceAnnounce` (it had to — F9 made the real API inert) and
+>    guarded that setup with `assumeTrue`, so it could **skip rather than fail**. Rewritten in Kotlin
+>    PR #42 to drive the real `announceDevices()` and assert unconditionally.
+
+> ## ✅ Phase 2 ACCEPTANCE SIGNED OFF (2026-07-25)
+>
+> **Criterion: "0.1 goes green. `authorDeviceId` returns a device id, verified against the sender's
+> actual device."** Met on **both** kits, by tests that run against a real server in CI — not by
+> inspection, and not by a suite that could skip.
+>
+> **Kotlin** — CI run `30138268289`, PR #42: **103 tests, 0 failures, 0 ignored.**
+> `F1 regression guard - real announceDevices, sender reconnect, both devices decrypt` passes in
+> 3.026s. Reproduced locally against a containerized server, with the mechanism visible rather than
+> inferred:
+>
+> ```
+> alice1.getOwnDevices()=2                        (F9: registry populated)
+> after announceDevices(), bob's friend store lists 2 device(s)   (F6/F9: real propagation)
+> device1 …553b… -> encrypts at address (…553b…, 1)  session=present
+> device2 …556f… -> encrypts at address (…556f…, 1)  session=present
+> distinct Signal addresses in use for Alice: 2   (F1: no collapse onto one session)
+> RESULT 'f1-c-announce': device1 decrypted=true  device2 decrypted=true
+> ```
+>
+> **Swift** — CI run `30138464166`, PR #9, on macOS against a native server. Four new tests, all
+> executed and passed (verified in the run log, not assumed from a green tick):
+> `testBothDevicesDecryptAfterSenderReconnect`, `testOwnDeviceRegistryIsPopulated`,
+> `testServerListsTwoDevicesForAlice`, `testLinkApprovalPopulatesTheApproverRegistry`, plus
+> `AuthorDeviceIdTests`:
+>
+> ```
+> PROVEN: authorDeviceId=019f96db-9283-… == bob.deviceId=019f96db-9283-…
+>         (bob.userId=019f96db-927c-… — a different UUID: the F4 lie is dead)
+> RESULT after sender reconnect: device1='swift-2dev-b-reconnect' device2='swift-2dev-b-reconnect'
+> approver registry after validateAndApproveLink: ["019f96e4-4c37-…", "019f96e4-4c5d-…"]
+> ```
+>
+> **The sender reconnect is the load-bearing step in both kits.** Without it a two-device test passes
+> vacuously — it sends while the device map is fresh from the prekey fetch, so even broken addressing
+> delivers. That is why `MultiDeviceFanOutTests` (Swift) and the old Order-2 case (Kotlin) passed
+> throughout the F1 era.
+>
+> ### Known gaps accepted at sign-off — read before starting Phase 3
+>
+> 1. **Swift MODEL_SYNC is still acked before it is durably persisted** (§0.9 rule 3). See the
+>    Phase 1 status block: the fix lives in the ORM/CRDT engine Phase 3 deletes, so it is deliberately
+>    not fixed here and Phase 3 must close it by construction.
+> 2. **Swift sends `DEVICE_LINK_APPROVAL` but cannot receive one.** `routeMessage` has no
+>    `case .deviceLinkApproval`; an inbound approval falls through `default: break`, so a newly-linked
+>    Swift device discards the p2p keypair, recovery key, friends export and the approver's
+>    own-device list. Kotlin routes it to `handleLinkApproval` → `setOwnDevices` + identity keys. This
+>    is **pre-existing, not caused by Phase 2** — F9 correctly records the *local* device, which is
+>    why the registry holds 1 and not 0; the cross-device half was never implemented. Found by CI
+>    printing `getOwnDevices()=1` where Kotlin's fixture prints 2. Device linking is on SPEC §0.3's
+>    **keep** list, so the reset will not resolve this one — it needs a decision of its own.
+> 3. **`PushTests.processPendingMessages connects if not connected` is flaky** — one failure in two
+>    full local runs (`CONNECTED` expected, `DISCONNECTED` observed), passes 4/4 in isolation and
+>    green in CI. Not a Phase 2 regression (`PushTests` is untouched by Phases 1–2), but it is a real
+>    flake on the reconnect path and will make Phase 3's "did I break it?" signal noisier.
+> 4. **Kotlin's F1 probe has no Swift equivalent.** Both kits now prove the invariant against a real
+>    server; only Kotlin additionally exercises the *adversarial* case (a friend-store device list
+>    that the old code would poison on rebuild). The Swift tests would not catch a Swift-specific
+>    regression of that exact shape.
+>
+> **One more thing the evidence turned up:** `ORMWireTests."ORM survives file-backed restart"` had
+> **never executed** since 2026-07-06. Expression-bodied with `File.delete()` last, it compiled to
+> `boolean`, and JUnit 5 silently ignores a non-void `@Test` — not skipped, not reported, absent.
+> Found by diffing source `@Test` counts against JUnit's reported count; fixed in PR #42 (it passes).
+> The general lesson for Phase 3: **trust the runner's count, not a grep.**
 
 > **Do not import Signal-Server's schema to satisfy libsignal — libsignal does not ask for it.**
 > obscura-server is a protocol implementation, not a Signal-Server clone: device UUIDs (not small
@@ -561,10 +618,16 @@ server.**
 
 Now execute `RESET.md`, on a foundation that is correct and has tests.
 
-**Entry condition (2026-07-24): not yet met.** Phase 2 is half-landed — Swift is unmerged and
-unverified, and 0.1 has not been re-run against the fixed code. Starting a ten-thousand-line deletion
-while one kit still addresses sessions by `registrationId` reintroduces exactly the problem this plan
-sequenced around: debugging a protocol bug through the diff.
+**Entry condition (2026-07-25): MET.** Phase 2 acceptance is signed off on both kits with CI
+evidence (see the Phase 2 status block). The foundation is correct and, for the first time, both
+kits have tests that fail when it stops being correct.
+
+Before deleting anything, read the four gaps recorded at sign-off. Two of them shape how much the
+reset's safety net is worth: Swift still acks MODEL_SYNC before persisting it (which **this phase**
+must close by construction — verify it, do not assume it), and `PushTests` has a live flake on the
+reconnect path, so a red run during the deletion is not automatically your diff. A third — Swift
+cannot receive a `DEVICE_LINK_APPROVAL` — sits in code the reset **keeps**, so it needs its own
+decision rather than a place in the deletion inventory.
 
 - Delete the ORM, CRDT engine, query DSL, schema parser and audience-routing engine from both kits.
 - Delete the now-vestigial `FriendDeviceInfo.registrationId` (and its `rebuildDeviceMap` copy). Since
