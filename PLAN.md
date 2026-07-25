@@ -427,6 +427,39 @@ Client-only. No proto change, no server change. Small, safe, independently shipp
 >   persist-failure test added. Until then, Swift is safe against the *decrypt-failure* data loss;
 >   only the rarer persist-failure path is unguarded.
 
+> **Status (2026-07-24): the Swift residual was written, and it is incomplete on the path that
+> matters most. Accepted knowingly — Phase 3 resolves it.**
+>
+> The residual above was implemented on `swift/phase2-device-uuid` (`eeb8bee`): `FriendActor.add` /
+> `.updateDevices` / `.remove` and `MessageActor.add` became throwing, `routeMessage` became
+> `async throws`, and the ack in `processEnvelope` now sits after it inside the `do` — so a persist
+> failure skips the ack. That part is correct, and was read against the code rather than trusted.
+>
+> **But `routeMessage`'s `.modelSync` case does not participate.** It calls
+> `_ = await syncManager.handleIncoming(...)`, which is non-throwing, and every layer beneath it
+> swallows write errors: `SyncManager.handleIncoming` → `Model.handleSync` → `GSet.merge` /
+> `LWWMap.merge` → `ModelStore.put`, which is still `try? await db.write` (five sites in
+> `ModelStore.swift`). So **a MODEL_SYNC whose durable write fails is still acked, and the server
+> deletes it** — the exact §0.9 rule 3 violation Phase 1 exists to close.
+>
+> This is not a corner: **MODEL_SYNC is the app's primary message type.** Every `directMessage`,
+> `pix` and `story` in `obscura-pix` rides on it. Phase 1 closed the TEXT and friend-graph paths —
+> the ones the tests exercise — and left the path the product actually uses unguarded. Kotlin is not
+> affected: its persist-then-ack covers the ORM write on the same path.
+>
+> **Decision (2026-07-24): record it, do not fix it here.** Closing it properly means plumbing
+> `throws` through `ModelStore.put` → `merge` → `handleSync` → `handleIncoming` — the ORM and CRDT
+> engine, which Phase 3 deletes outright. Hardening code that is about to be deleted is the precise
+> failure mode this reset exists to stop (§0.8), and it would be a signature change through
+> deletion-bound code that cannot be compiled on Linux. **Phase 3 resolves it by construction:** the
+> kit stops persisting model entries at all, merge logic moves to `obscura-pix`, and the only durable
+> writes left in the kit are the message store and friend graph, which already throw.
+>
+> **The cost of that choice, stated plainly:** until Phase 3 lands, Swift can lose a MODEL_SYNC
+> message on a write failure. If Phase 3 slips, revisit — the narrow version (make `ModelStore.put`
+> throwing and let the two `merge` implementations propagate) is a much smaller change than the full
+> plumbing, and is the fallback.
+
 ### Phase 2 — One identifier, everywhere
 
 The coordinated proto + server + both-kits change. Cures F1, F4, F5, F6, F9 and the `authorDeviceId`
@@ -544,6 +577,11 @@ sequenced around: debugging a protocol bug through the diff.
 - **pix needs a test suite.** It has none; CI runs `tsc`, `eslint` and an Android release build —
   compile breaks are caught, every semantic regression is not. The reset moves the domain *into* pix,
   so pix becomes where correctness lives.
+- **Closes the Swift MODEL_SYNC ack-before-persist hole by construction** (see the Phase 1 status
+  block). Once the kit no longer persists model entries, the only durable writes left on the receive
+  path are the message store and the friend graph, both of which already throw and therefore already
+  skip the ack. Verify this when the deletion lands — it is the one §0.9 violation currently accepted
+  knowingly, and it should die with the ORM rather than quietly survive it.
 
 **Acceptance:** pix builds and runs on both platforms against the thin kits, with tests, and the
 deleted surface has no callers.
