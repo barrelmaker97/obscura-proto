@@ -338,6 +338,14 @@ future non-idempotent rule breaks the contract with it.**
 > carrying identical data, so first-wins and last-wins are indistinguishable there. Flipping APPEND
 > to last-wins passed all 13 vector-driven tests.
 
+**`merge.json` is a contract today and a fixture tomorrow, and the switch has an order.** While the
+kits still implement these semantics there are three implementations, so it is a genuine conformance
+vector and `obscura-pix` is right to read it from its `proto/` submodule (which it does, as of pix
+PR #56). Once Phase 3 deletes the kits' merge engine there is exactly **one** implementation left,
+and a vector with one implementation is not a contract — it is pix's test fixture, and it should move
+into pix. **pix must be reading a local copy before this file is deleted**, or the deletion breaks
+pix's only test suite on the day it lands. Sequenced in `RESET.md`, "The `merge.json` handover".
+
 **`conformance/merge.json` ports partially, not wholly.** Of its six cases, three survive as
 APPEND/REPLACE (GSet union, GSet idempotence, LWW higher-timestamp) and one survives *only because*
 of the tie-break decision above. The two tombstone cases (`newer tombstone wins`, `stale write does

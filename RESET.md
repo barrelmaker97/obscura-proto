@@ -70,12 +70,48 @@ no relationships, and no reactive observation of entries.
 | Item | Why |
 |---|---|
 | `conformance/routing.json` + `SPEC §1` | A kit no longer resolves an audience, so it cannot misroute. Note these vectors pin a `recipient` audience for `pix` — but the app actually declares `conversation` for `pix` (`schema.ts`). The vectors were policing a configuration the app does not use. |
-| `conformance/merge.json` + `SPEC §2.1-2.3` | See below: the app needs `APPEND` and `REPLACE`, not a CRDT. |
+| `SPEC §2.1-2.3` (the CRDT prose) | See below: the app needs `APPEND` and `REPLACE`, not a CRDT. |
+| `conformance/merge.json` | **DO NOT simply delete — it MIGRATES. See "The merge.json handover" below.** |
 | `conformance/schema.json` + `SPEC §4` | Kits do not parse app schemas. Swift never adopted this vector, which is a fair signal of its value. |
 
 **Keep:** `conformance/wire.json` + `SPEC §3` — load-bearing forever. Two kits must encode
 and decode identically. **Keep** `SPEC §2.4` (future-timestamp clamp): it applies to any
 peer-supplied timestamp, and belongs on the `REPLACE` rule and the device-announce guard.
+
+### The `merge.json` handover
+
+**A vector file is a contract between implementations. It stops being one when there is only one
+implementation left — at which point it is a test fixture, and it belongs with the code it tests.**
+
+`merge.json` is mid-handover right now, so deleting it on the old schedule would break a live suite:
+
+| | implementations of these semantics | what `merge.json` is | where it lives |
+|---|---|---|---|
+| **Today** | 3 — Kotlin ORM, Swift ORM, `obscura-pix` (`src/domain/merge.ts`, pix PR #56) | a **contract** | here; pix reads it through its `proto/` submodule |
+| **After this phase** | 1 — pix alone | a **fixture** | move the file into `obscura-pix`, delete it here |
+
+So the sequence is: **pix's copy of the tests must be reading a local fixture BEFORE this file is
+deleted**, or the deletion breaks `obscura-pix`'s only test suite the day it lands. Concretely:
+
+1. pix vendors the surviving cases into its own repo and switches
+   `src/domain/__tests__/merge.vectors.test.ts` off the submodule path.
+2. Only then does `conformance/merge.json` get deleted here, along with `SPEC §2.1-2.3`.
+
+**Only four of the six cases carry over.** GSet union, GSet idempotence, LWW higher-timestamp, and
+the LWW equal-timestamp tie-break — the last surviving only because `KIT_API.md` §8.2 decided to
+keep a total order, keyed on the *authenticated* device id. The two tombstone cases retire with
+`deleteEntry`. Say which are which when vendoring; a port that silently drops a third of a contract
+is how a contract stops being one.
+
+**Note the vectors are not sufficient on their own.** Mutation-testing pix's port found that
+flipping APPEND from first-wins to last-wins passes every case in this file, because the idempotence
+case uses a duplicate carrying identical data. pix supplements them (`merge.test.ts`); whatever
+vendors these cases must carry that supplement too.
+
+**Does `obscura-pix` keep the `proto/` submodule afterwards?** Yes — it still needs `SPEC.md` as the
+normative contract for the kit boundary and the inbox, even once it holds its own merge fixtures.
+What changes is that it stops depending on a *vector file* that no longer has a second implementation
+to hold to account.
 
 ## Delete — `obscura-pix`
 

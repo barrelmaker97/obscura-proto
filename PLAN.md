@@ -756,9 +756,14 @@ decision rather than a place in the deletion inventory.
 - Delete the now-vestigial `FriendDeviceInfo.registrationId` (and its `rebuildDeviceMap` copy). Since
   Phase 2 it addresses nothing; leaving a field named like an address in a struct that describes a
   device is how the next reader re-learns F1 the hard way.
-- **Port `conformance/merge.json` into pix's test suite** rather than deleting it. The APPEND/REPLACE
-  semantics are not going away — they are changing address — and those vectors are the only
-  executable statement of them that exists.
+- **Hand `conformance/merge.json` over to pix rather than deleting it — in that order.** The
+  APPEND/REPLACE semantics are not going away, they are changing address, and those vectors are the
+  only executable statement of them that exists. pix already runs them (pix PR #56) by reading its
+  `proto/` submodule, which is correct *while the kits still implement them*. The moment this phase
+  deletes the kits' merge engine there is one implementation left, so the file stops being a contract
+  and becomes pix's fixture. **pix must be reading a local copy before the file is deleted here**, or
+  the deletion breaks pix's only test suite the day it lands. Sequence and the four-of-six case
+  breakdown: `RESET.md`, "The `merge.json` handover".
 - **Define the thin kit's API before coding it.** This is the one genuinely hard-to-reverse decision
   in the plan.
 - Move the real merge logic into pix TypeScript. It is small: append-with-dedupe, LWW-by-timestamp,
