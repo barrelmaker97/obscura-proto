@@ -353,6 +353,39 @@ clobber. Fix F9 alone and F1 detonates. See the Phase 2 constraint.
 > Kotlin fixture prints 2. **This is in code SPEC §0.3 says a kit KEEPS, so Phase 3 will not resolve
 > it** — it needs its own decision.
 
+### F10 — The push-drain swallows a failed `connect()` and reports success
+
+*(Discovered 2026-07-25 while establishing Phase 2 acceptance. Not in the original audit. Blocks
+nothing in Phase 3; **decide it before Phase 4**.)*
+
+`ObscuraClient.kt:735` — `processPendingMessages`, the push-wake entry point:
+
+```kotlin
+if (_connectionState.value != ConnectionState.CONNECTED) {
+    try { connect() } catch (_: Exception) { return ProcessedCounts() }   // ← swallowed
+}
+```
+
+A failed `connect()` returns **all-zero counts**, which is byte-identical to "connected fine, nothing
+waiting". The caller cannot tell a dead connection from an empty inbox.
+
+Surfaced as a ~25% flake in `PushTests.processPendingMessages connects if not connected` (3 failures
+in ~10 runs, local and CI, including on a **docs-only** PR). It is not a flaky test: the failing CI
+case finished in **0.132s**, well under the 500 ms idle threshold the drain loop must reach before
+breaking, so it returned via the exception path without draining anything.
+
+**Why this is worse than CI noise:** this call *is* the justification in SPEC §0.1 for kits existing
+natively at all. In production a transient connect failure means the device is woken by a push,
+silently reports no messages, and leaves them on the server — no error, no notification, no retry
+until something else reconnects. **Phase 4 builds the iOS NSE directly on this call**, inside a
+30-second budget where a silent no-op is indistinguishable from success.
+
+The fix is a contract decision, not a cleanup: propagate, retry, or return a distinguishable
+"could not connect" — but not silence. It changes what `obscura-pix`'s push handler receives, so it
+needs a deliberate choice. The root cause of the `connect()` failure itself is still unknown: it
+stopped reproducing once diagnostics were attached, which is its own argument for making the failure
+observable instead of swallowed.
+
 ---
 
 ## Phases
@@ -606,10 +639,35 @@ actual device.
 >    why the registry holds 1 and not 0; the cross-device half was never implemented. Found by CI
 >    printing `getOwnDevices()=1` where Kotlin's fixture prints 2. Device linking is on SPEC §0.3's
 >    **keep** list, so the reset will not resolve this one — it needs a decision of its own.
-> 3. **`PushTests.processPendingMessages connects if not connected` is flaky** — one failure in two
->    full local runs (`CONNECTED` expected, `DISCONNECTED` observed), passes 4/4 in isolation and
->    green in CI. Not a Phase 2 regression (`PushTests` is untouched by Phases 1–2), but it is a real
->    flake on the reconnect path and will make Phase 3's "did I break it?" signal noisier.
+> 3. **The push-drain swallows a failed `connect()` and reports success — F10.** Surfaced as a
+>    ~25%-flaky `PushTests.processPendingMessages connects if not connected` (3 failures in ~10 runs,
+>    local *and* CI, including on a docs-only PR). It is **not** merely a flaky test. Mechanism, from
+>    `ObscuraClient.kt:735`:
+>
+>    ```kotlin
+>    if (_connectionState.value != ConnectionState.CONNECTED) {
+>        try { connect() } catch (_: Exception) { return ProcessedCounts() }   // ← swallowed
+>    }
+>    ```
+>
+>    When `connect()` throws, the exception is discarded and the method returns **all-zero counts** —
+>    indistinguishable from "connected fine, no messages waiting". Proof it is this path and not a
+>    slow reconnect: the failing CI case completed in **0.132s**, far below the 500 ms idle threshold
+>    the drain loop must reach before breaking, so it never drained at all.
+>
+>    **Why it matters beyond CI noise:** `processPendingMessages` *is* the push-wake path — the one
+>    SPEC §0.1 uses to justify native kits existing. A transient connect failure there means the app
+>    is woken, silently reports "no messages", and leaves them on the server with no error and no
+>    notification, until something else reconnects. Phase 4 builds the iOS NSE on this exact call.
+>    **Decide the contract before Phase 4:** propagate the failure, retry, or return a distinguishable
+>    "could not connect" result — but not silence. Changing it alters what `obscura-pix`'s push
+>    handler receives, so it is a deliberate API decision, not a cleanup.
+>
+>    Not a Phase 2 regression (`PushTests` is untouched by Phases 1–2). Until it is fixed, expect
+>    roughly one in four full runs to go red here — **a red `PushTests` during the reset is probably
+>    not your diff.** The underlying cause of the `connect()` failure itself is still unknown: it
+>    declined to reproduce with diagnostics attached, which is itself a reason to make the failure
+>    observable rather than swallowed.
 > 4. **Kotlin's F1 probe has no Swift equivalent.** Both kits now prove the invariant against a real
 >    server; only Kotlin additionally exercises the *adversarial* case (a friend-store device list
 >    that the old code would poison on rebuild). The Swift tests would not catch a Swift-specific
