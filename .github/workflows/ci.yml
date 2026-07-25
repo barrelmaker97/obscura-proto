@@ -13,6 +13,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: bufbuild/buf-setup-action@v1
+        with:
+          # Without a token this action resolves its download URL through the unauthenticated
+          # GitHub API and fails the whole job on a shared-runner rate limit — observed
+          # 2026-07-25 on a docs-only PR. The gate must fail for contract reasons, not
+          # because a neighbouring runner used up the quota.
+          github_token: ${{ secrets.GITHUB_TOKEN }}
       - uses: bufbuild/buf-lint-action@v1
 
   breaking:
@@ -22,6 +28,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: bufbuild/buf-setup-action@v1
+        with:
+          # Without a token this action resolves its download URL through the unauthenticated
+          # GitHub API and fails the whole job on a shared-runner rate limit — observed
+          # 2026-07-25 on a docs-only PR. The gate must fail for contract reasons, not
+          # because a neighbouring runner used up the quota.
+          github_token: ${{ secrets.GITHUB_TOKEN }}
       - uses: bufbuild/buf-breaking-action@v1
         with:
           # Compares the PR branch against the 'main' branch
