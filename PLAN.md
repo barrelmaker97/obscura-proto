@@ -747,11 +747,18 @@ decision rather than a place in the deletion inventory.
   not an event stream: any design where the kit hands a payload to the app and then acks puts a
   server-side DELETE ahead of the app's durable write, across an async bridge, on a path where the
   app may not be running. That is the Phase 1 data-loss bug rebuilt in both kits at once.
-- **`obscura-pix` must gain a durable store.** It has none today — no AsyncStorage, no MMKV, no
-  SQLite; its entire persistence *is* the kit's ORM, with zustand rebuilt from `allEntries` on every
-  event. Deleting the ORM does not move pix's storage, it removes it. This is the largest single
-  piece of work in the phase and it is absent from `RESET.md`, whose inventory only lists what comes
-  *out* of the kits.
+- **pix takes ownership of the existing entry table — it does not build a new one.** *(Corrected
+  2026-07-25; this bullet previously called it "the largest single piece of work in the phase",
+  which was wrong and oversized the phase.)* pix has no persistence of its own, but `ModelEntry`
+  already exists in the kit's schema with exactly the columns the new design needs, and
+  `ModelStore.kt` writes `data` as plain application JSON with the merge metadata in columns beside
+  it. So there is **no migration, no new schema and no data transform** — keep the table, delete the
+  engine above it, expose three bridge methods, and leave `timestamp` / `author_device_id` in place
+  as the only thing a future sync could be built from. Detail and the deletion list: `KIT_API.md`
+  §8.1.
+- **The store stays native.** A TypeScript-side SQLite would need the SQLCipher key to cross the
+  bridge into the JS heap, and would put a bridge round-trip inside the inbox's peek → write →
+  consume window. Both are avoidable by leaving the table where it is.
 - Delete the ORM, CRDT engine, query DSL, schema parser and audience-routing engine from both kits.
 - Delete the now-vestigial `FriendDeviceInfo.registrationId` (and its `rebuildDeviceMap` copy). Since
   Phase 2 it addresses nothing; leaving a field named like an address in a struct that describes a
@@ -782,6 +789,29 @@ decision rather than a place in the deletion inventory.
 
 **Acceptance:** pix builds and runs on both platforms against the thin kits, with tests, and the
 deleted surface has no callers.
+
+#### Explicitly NOT in Phase 3
+
+The app is **dev-only — there are no real users** (confirmed 2026-07-25). That makes this the right
+moment for breaking changes and the wrong moment for anything speculative. Three things that look
+adjacent and are not this phase's:
+
+- **Backup / restore / multi-device sync.** The server already provides it and it is fully built —
+  versioned blob with `ETag`/`If-Match` concurrency, streamed to object storage, 2 MB cap,
+  end-to-end encrypted under the recovery phrase — and `SyncBlob`'s `messages` slot already exists
+  and is shipped empty by both kits. Filling it is a later phase and needs no server change. Phase 3
+  owes only that it not foreclose the option, which it does not, since `timestamp` and
+  `author_device_id` stay on the table. `KIT_API.md` §8.4.
+- **Android SQLCipher.** Android currently stores model entries *and* Signal session state in
+  plaintext SQLite while iOS encrypts (`KIT_API.md` §8.1). Real, but enabling it re-keys or wipes the
+  database, and bundling a crypto migration into a ten-thousand-line deletion means two ways to lose
+  data in one release. Separate work — and it should not drift indefinitely.
+- **A query API on the new store.** Three bridge methods and no fourth. The failure mode is
+  obvious in advance: a table grows a filter, then an index abstraction, then observation, and
+  1,726 lines of Kotlin have been reimplemented in TypeScript and called a reset. If a screen needs
+  `WHERE conversationId = ?`, that is a deliberate decision with a number attached, not a drift.
+  Note the pressure it will come from: `allEntries('directMessage')` loads every message ever sent,
+  forever, and nothing in the design deletes. Fine at current volume; not fine indefinitely.
 
 ### Phase 4 — Push and the NSE
 

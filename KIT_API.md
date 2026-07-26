@@ -290,13 +290,52 @@ registerNotificationTemplates(
 
 ## 8. What this means for `obscura-pix`
 
-### 8.1 pix must gain a durable store — this is new work, not a move
+### 8.1 pix's store already exists — keep the table, delete the engine
 
-**`obscura-pix` has no local persistence today.** No AsyncStorage, no MMKV, no SQLite: its entire
-durable store is the kit's ORM, and its in-memory state is zustand rebuilt from `allEntries` on every
-`entriesChanged`. Deleting the ORM therefore does not *move* pix's storage — **it removes it**. This
-is the largest single piece of work in Phase 3 and it is absent from `RESET.md`, whose inventory
-lists only what comes *out* of the kits.
+> **Corrected 2026-07-25.** The draft said pix "must gain a durable store … the largest single piece
+> of work in Phase 3". That was wrong, and it made the phase look far bigger than it is.
+
+**`obscura-pix` has no persistence of its own** — no AsyncStorage, no MMKV, no SQLite in `src/`, and
+its in-memory state is zustand rebuilt from `allEntries` on every `entriesChanged`. But the *table*
+it needs is already on disk, in the kit's own schema:
+
+```sql
+-- ObscuraKit-Kotlin/lib/src/main/sqldelight/com/obscura/kit/ModelEntry.sq
+CREATE TABLE IF NOT EXISTS ModelEntry (
+    model_name TEXT NOT NULL,
+    entry_id   TEXT NOT NULL,
+    data       TEXT NOT NULL,
+    timestamp  INTEGER NOT NULL,
+    author_device_id TEXT NOT NULL,
+    deleted    INTEGER NOT NULL DEFAULT 0,
+    ttl_expires_at INTEGER,
+    PRIMARY KEY (model_name, entry_id)
+);
+```
+
+`ModelStore.kt` writes `data` as `JSONObject(entry.data).toString()` — **plain application JSON, with
+the merge metadata in columns beside it, not folded into the blob.** So the row format is directly
+reusable and there is no data transform, no new schema, and no migration.
+
+Phase 3's storage work is therefore: **keep the table, delete the ~1,726 lines of engine above it,
+and expose three methods across the bridge** (`putEntry`, `allEntries`, `findEntry`). `timestamp` and
+`author_device_id` stay — they cost nothing and they are the only thing a future sync could be built
+from. `ModelAssociation` goes with the relationships that were never bridged; `deleted` and
+`ttl_expires_at` go dead with tombstones and `TTLManager` and can be dropped whenever convenient.
+
+The store stays **native**, not TypeScript. Two reasons: iOS already opens this database through
+SQLCipher with a per-user Keychain key (`ObscuraClient.swift:282`), and a TS-side store would need
+that key to cross the bridge into the JS heap; and the inbox drain (§3) then runs entirely in one
+process, with no bridge round-trip inside the peek → write → consume window.
+
+> **Platform gap, unrelated to this phase but found while checking the above.** Android does *not*
+> encrypt: `obscura-pix/android/.../ObscuraSession.kt:174` constructs
+> `AndroidSqliteDriver(ObscuraDatabase.Schema, appContext, dbName)` with no factory, and SQLCipher
+> appears nowhere in the Android app — while `ObscuraClient.kt:83` documents the encrypted factory
+> integrators are meant to pass. Model entries **and** Signal session state, identity keys and
+> prekeys are plaintext in app-private storage, protected only by the app sandbox and full-disk
+> encryption. Turning SQLCipher on re-keys an existing database (`sqlcipher_export`) or wipes it, so
+> it does not belong inside the deletion — **separate work, and it should not drift indefinitely.**
 
 ### 8.2 Merge moves to pix — including the tie-break
 
@@ -359,17 +398,56 @@ filters — `story`'s `ttl: '24h'` becomes a field, and **nothing in pix referen
 this is a feature to build); notification copy (§7); and display names — from `senderDisplayName` or
 `friends()`, never a payload. `senderUsername` has **18 references** in `pix/src`, all needing rerouting.
 
-### 8.4 The consequence of one table: no history, no backup, no second device
+### 8.4 Backup: the server already provides it, and we ship it empty
 
-`consume` deletes the row, so history lives only in the app's new store. Today the only cross-device
-transfer is `SyncBlob`, and it carries **friends only** — `pushHistoryToDevice` passes an empty
-message list; account backup is the same blob. So after the reset: **a newly linked device, or a
-reinstall, is permanently empty**, with no mechanism that could fill it, and the server's copies are
-long since acked and deleted.
+`consume` deletes the inbox row, so history lives only in the app's store. The draft concluded from
+this that "pix owns multi-device convergence and backup, or the product has neither," and that
+Phase 3 had to decide it. **Both halves were wrong** — the server owns backup already, and it is
+built.
 
-That is true today too, but today the kit at least *holds* the entries, so a sync could be built on
-them. After this change, **pix owns multi-device convergence and backup, or the product has neither.**
-This needs a decision in Phase 3, not a discovery in Phase 5.
+**What `obscura-server` offers today:**
+
+| | |
+|---|---|
+| `GET /v1/backup` | Streams the blob. `ETag` = version; honours `If-None-Match` (304 when current) |
+| `HEAD /v1/backup` | Version + size without downloading — "is my copy stale?" |
+| upload | `If-Match` for optimistic concurrency; `If-Match: *` asserts first-ever upload |
+| storage | Streamed to S3/MinIO under `backups/`; never buffered in the server |
+| safety | `UPLOADING`/`ACTIVE` states plus a `backup_cleanup` worker that reaps stale uploads |
+| limits | **2 MB max**, 32 bytes min, both configurable (`config.rs`) |
+
+It is already end-to-end encrypted: `RecoveryManager.uploadBackup()` gzips and encrypts under
+`BackupCrypto.encrypt(compressed, recoveryPublicKey)`, and `downloadBackup(recoveryPhrase)` decrypts
+with the mnemonic. The server holds ciphertext it cannot read.
+
+**And the blob format already has room for entries.** `SyncBlob.kt:21` is
+`export(friends, messages: Map<…> = emptyMap())` — Kotlin never passes the second argument, Swift
+writes `messages: []` explicitly (`ObscuraClient.swift:1031`, `:1061`), and `pushHistoryToDevice`
+does the same. We are not missing a backup feature; **we are shipping an empty field into a working,
+versioned, encrypted backup.**
+
+So filling it later is not new infrastructure on either side, and **Phase 3 owes only that it not
+foreclose the option** — which it does not, for free, since `timestamp` and `author_device_id` stay
+on the table (§8.1). Under YAGNI this is **not Phase 3 work.**
+
+> **Backup is device-scoped, and recovery does not re-derive a device id.** `api/backup.rs:25`
+> requires a device-scoped token and keys every row on that `device_id`; `devices.id` is
+> `uuidv7()` generated by Postgres (`migrations/001_core_and_auth.sql`), never client-supplied and
+> never derived from the seed — `device_repo.create` takes only `(user_id, name)`. A fresh install is
+> therefore a new device whose `GET /v1/backup` is a 404, while the old blob sits in object storage
+> encrypted under a phrase the user still holds.
+>
+> It is still reachable, by **re-claiming rather than re-deriving**: `list_devices` accepts a
+> user-only JWT, and `auth_service.login` will mint a *device-scoped* token for any `device_id` that
+> `belongs_to_user`. So login → list devices → login again naming the old device → `GET /v1/backup` →
+> decrypt with the phrase. **No kit implements this today.** Whoever builds restore should follow
+> that path rather than assume a derived identity.
+>
+> Note the property that path depends on: **a password alone yields a device-scoped token for any of
+> that user's existing devices.** Device identity is an id the server hands out on request, not
+> something bound to key material. The backup stays confidential (it is encrypted under the recovery
+> phrase), but an attacker holding only the password can overwrite it, or drain and ack that device's
+> queued envelopes. Recorded here as an observation; it is a server-side question, not a Phase 3 one.
 
 ---
 
@@ -430,8 +508,8 @@ the wipe mechanism it refers to was itself deleted.
 
 The iOS NSE cannot reach today's store on two counts: the DB path is `.applicationSupportDirectory`
 (app-private, not an App Group) and the SQLCipher key is stored with no `kSecAttrAccessGroup`, so an
-extension in a different bundle id cannot read it. **Because the inbox IS the message store (§8.4),
-this decides where that table lives.**
+extension in a different bundle id cannot read it. **The inbox and the entry table (§8.1) share that
+database, so this decides where both live.**
 
 Do it in Phase 3, not Phase 4. Now it costs a path change, a keychain attribute and an entitlement.
 Later it costs a **data migration of the only copy of the user's messages**, on a kit whose migration
@@ -468,7 +546,8 @@ accident, which is why it is written down as a decision rather than left to whoe
 TypeScript surface for both platforms with both kits consumed from source (Gradle composite build,
 local SPM). So "Kotlin ships first" would break iOS for the whole duration of the Swift port:
 
-1. pix gains a durable store **and** its test suite;
+1. pix gains its test suite **(done, PR #56)** and takes ownership of the existing `ModelEntry`
+   table across the bridge (§8.1);
 2. **both** kits gain `inbox` + `send` alongside the existing ORM — Kotlin **designs** first and
    Swift ports the proven shape, but pix does not switch until both have landed;
 3. pix switches to the new API;
@@ -480,12 +559,20 @@ Pin kit commits in pix CI for the duration, so step 4 cannot strand an older pix
 
 ## 11. Still open
 
-- `settings_sync` / `read_sync` classification (§4).
+- `settings_sync` / `read_sync` classification (§4). Note the `settings` **model** is declared in
+  `pix/src/models/schema.ts` and has **zero references anywhere in `src/`** (checked 2026-07-25) —
+  four live models, not five. Confirm whether that moots the `settings_sync` half before designing
+  for it.
 - Unknown-arm policy: inbox unparsed, or decline to ack (§4)?
 - Does the app ever need to write to the inbox? Probably not — self-sync arrives through the normal
   receive path — but confirm before building.
 - Template miss / first-run / null-name / locale behaviour for notifications (§7).
-- Multi-device convergence and backup after §8.4 — whose problem, and in which phase?
+- ~~Multi-device convergence and backup — whose problem, and in which phase?~~ **Answered (§8.4):**
+  the server's, already built; the client fills `SyncBlob`'s empty `messages` slot in a later phase.
+  Phase 3 owes only that it not foreclose it, which it does not.
+- Restore-after-reinstall must re-claim the old `device_id` from `list_devices`, not re-derive it
+  (§8.4). Which phase builds that, and does the password-alone device-claim property need closing
+  first?
 - **`obscura-client-web` is a fourth wire-compatible client** with its own ModelSync ORM. It is
   non-normative, but nothing says "retire it", and if it is ever run against an account after pix
   switches it will emit tombstones and LWW writes pix no longer understands.
