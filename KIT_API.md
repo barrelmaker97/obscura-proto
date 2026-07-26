@@ -76,6 +76,7 @@ or a declared `client.proto` field — nothing is parsed out of `payload`.
 | Field | Source | Notes |
 |---|---|---|
 | `id` | kit | Monotonic per install. Drain order. Not a message id. |
+| `envelopeId` | `Envelope.id` | **`UNIQUE`. Insert with `INSERT OR IGNORE`.** The dedupe key — see below. **New in rev 3.** |
 | `kind` | the `payload` oneof arm | §3.1 of SPEC; the message type. **New in rev 2** — without it the record could only describe a `ModelSync`. |
 | `receivedAt` | kit clock | When the kit persisted it, not a peer-supplied time. |
 | `senderUserId` | `Envelope.sender_id` | Authenticated (§0.10). |
@@ -136,6 +137,33 @@ or a declared `client.proto` field — nothing is parsed out of `payload`.
    path (§0.9 rule 4).
 7. `inboxDepth()` MUST be exposed. An inbox that grows without bound means the app has stopped
    draining, and that MUST be visible rather than silently absorbed.
+8. **The inbox MUST be keyed `UNIQUE` on `envelopeId` and insert with `INSERT OR IGNORE`.**
+   *(New in rev 3, 2026-07-25.)* Without this the design is **strictly less idempotent than the code
+   it replaces**, which is the opposite of what §2 claims for it.
+
+### 3.3.1 Why the dedupe key is not optional
+
+Persist-then-ack *guarantees* redelivery. The ack is best-effort and its failure is swallowed:
+
+```kotlin
+// ObscuraClient.kt:943
+try { gateway.ack(listOf(envelope.id)) } catch (e: Exception) { log("envelope ack failed: …") }
+```
+
+Persist succeeds, the ack fails or the socket drops before it lands, and the server's per-connection
+cursor (`message_pump.rs:63`) redelivers on the next connection. That is correct behaviour — §0.9
+requires exactly this rather than losing the message.
+
+**Today that redelivery is harmless, and the reason is the engine being deleted.** `ModelStore.put`
+is `INSERT OR REPLACE` on `(model_name, entry_id)`, so a re-delivered entry overwrites itself and
+nothing is duplicated. Take the ORM away and put a monotonic `id` in front of it, and the same
+redelivery inserts a **second row**: `inboxDepth()` inflates, `processPendingMessages` counts
+inflate, and the app posts a duplicate notification for a message the user already has.
+
+Idempotence must therefore be re-established explicitly, at the inbox, where it now lives. One
+column and one clause. `Envelope.id` is server-assigned and already the ack key, so it is exactly the
+right identity — and the merge rules (§8.2) stay idempotent underneath as a second line of defence,
+not as the only one.
 
 ### 3.4 Poison rows, and why there is still no eviction policy
 
@@ -157,6 +185,31 @@ where it is a decision; it does not belong to a timer.
 > first** with no tombstone (`obscura-server/src/adapters/database/message_repo.rs`,
 > `src/config.rs`). Declining to ack is a bounded reprieve, not durability, and past the bound it
 > silently destroys the oldest — most-wanted — messages. Any cap must therefore surface to the user.
+
+> **DEFERRED under YAGNI (rev 3, 2026-07-25).** Ship **`peek(limit)` / `consume(ids)` /
+> `discard(ids, reason)` / `inboxDepth()`** and nothing else. The `after:` cursor,
+> `deliveryAttempts` and `lastError` are all machinery for a poison row, and a poison row needs a
+> payload this app cannot parse. pix defines all four live model keys itself, so that requires **two
+> app versions in the field** — which, with no real users, is not now. The `discard` escape hatch
+> and `inboxDepth()` alone make a wedged inbox visible and clearable.
+>
+> This is a deferral, not a repudiation: the reasoning above is sound and the cursor is the right
+> answer *when a row actually wedges*. Add it then, with the row that motivated it. `envelopeId`
+> (§3.3 rule 8) is **not** part of this deferral — it is load-bearing from day one.
+
+### 3.5 The failure chain nobody has written down
+
+*(Added rev 3.)* Rules 2 and 7 forbid eviction and require `inboxDepth()`. Both are right. Together
+they imply a chain worth stating explicitly, because each link is individually correct:
+
+> app stops draining (crash loop, or an iOS user who never opens the app while the NSE keeps acking)
+> → inbox grows → disk pressure → the durable write throws → the kit correctly refuses to ack
+> → the message stays on the server → the **server's** queue hits `max_inbox_size: 1000`
+> → it evicts **oldest first, silently** → permanent loss of the oldest messages.
+
+This is the same conclusion the rev-2 correction above reached from the other end. The answer is
+still not eviction: it is that `inboxDepth()` must be **surfaced past a threshold**, not merely
+exposed on an API nobody calls. A number no one reads is not observability.
 
 ---
 
@@ -254,6 +307,25 @@ wake can steal a message from the app and post no notification at all.)
 
 ## 7. Notifications: whose name, and whether to show one
 
+> **CUT FROM PHASE 3 under YAGNI (rev 3, 2026-07-25). Keep the threat-model reasoning; drop the
+> API.** Three reasons, in order of weight:
+>
+> 1. **It contradicts §9.** `registerNotificationTemplates(templates: { modelKey: String })` is
+>    per-model configuration, stored durably in the kit, keyed by application model names. That is
+>    the same thing `ObscuraConfig.conversationModel` is being **deleted** for, wearing a different
+>    name. §9 lists exactly this as deliberately absent.
+> 2. **Android already solves it outside the kit.** `ObscuraSession.kt:272`'s `classifyForNotification`
+>    plus `NotificationHelper.postGeneric` run in the FCM cold-start process, in the app repo, and
+>    already enforce the generic-copy invariant. The kit is not needed for this and does not have it.
+> 3. **The only consumer that cannot do this app-side is the iOS NSE, which does not exist yet** —
+>    and Phase 4 builds it. Designing its configuration API now, before the extension that would use
+>    it, is speculative by definition.
+>
+> The four open sub-cases below (template miss, first run, null name, locale) are design work for a
+> feature nobody has asked for. **Decide this in Phase 4, against a real NSE.** What survives into
+> Phase 3 is one sentence: *the kit exposes `senderDisplayName` on the inbox record; what appears on
+> a lock screen is the app's decision, and today's answer is "nothing".*
+
 The old draft had the kit compose `"{senderDisplayName}" + template[modelKey]`. That was a
 **privacy-model change made in passing**, and it rested on a name that was not trustworthy.
 
@@ -318,7 +390,16 @@ the merge metadata in columns beside it, not folded into the blob.** So the row 
 reusable and there is no data transform, no new schema, and no migration.
 
 Phase 3's storage work is therefore: **keep the table, delete the ~1,726 lines of engine above it,
-and expose three methods across the bridge** (`putEntry`, `allEntries`, `findEntry`). `timestamp` and
+and expose three *storage* methods across the bridge** (`putEntry`, `allEntries`, `findEntry`).
+
+> **The send half is not included in that three, and saying "three bridge methods" without this
+> caveat undersells the phase** *(corrected 2026-07-25)*. `createEntry` is not a store call:
+> `Model.kt:66` ends in `syncManager?.broadcast(this, entry)`, so it is the app's **entire outbound
+> path**, and pix has no `send` of its own today. After the reset pix must resolve the audience for
+> four models, honour `SPEC §1.2`'s fail-loud rule (see `RESET.md`, "The `routing.json` leak
+> guards"), call the kit's `send`, **and** write its own local row — the last of which §5 notes but
+> the "three methods" framing hides. The scope guard is still *three storage methods and no fourth*;
+> it was never a claim that the whole phase is three methods. `timestamp` and
 `author_device_id` stay — they cost nothing and they are the only thing a future sync could be built
 from. `ModelAssociation` goes with the relationships that were never bridged; `deleted` and
 `ttl_expires_at` go dead with tombstones and `TTLManager` and can be dropped whenever convenient.
@@ -416,15 +497,49 @@ built.
 | safety | `UPLOADING`/`ACTIVE` states plus a `backup_cleanup` worker that reaps stale uploads |
 | limits | **2 MB max**, 32 bytes min, both configurable (`config.rs`) |
 
-It is already end-to-end encrypted: `RecoveryManager.uploadBackup()` gzips and encrypts under
-`BackupCrypto.encrypt(compressed, recoveryPublicKey)`, and `downloadBackup(recoveryPhrase)` decrypts
-with the mnemonic. The server holds ciphertext it cannot read.
+> **CORRECTION (2026-07-25, same day).** This section first stated as fact that the backup "is
+> already end-to-end encrypted … the server holds ciphertext it cannot read." **That is true of
+> Kotlin only, and it is a live confidentiality defect on iOS.** Guardrail 4 in `RESET.md` — *a doc
+> comment asserting a safety property must cite the test that proves it* — applies to this document
+> too, and this is what it looks like when it is not followed.
 
-**And the blob format already has room for entries.** `SyncBlob.kt:21` is
+**Kotlin** encrypts: `RecoveryManager.uploadBackup()` gzips and encrypts under
+`BackupCrypto.encrypt(compressed, recoveryPublicKey)`, and `downloadBackup(recoveryPhrase)` decrypts
+with the mnemonic. It **falls back to plaintext when `recoveryPublicKey == null`**, silently.
+
+**Swift does not encrypt at all**, despite a doc comment that says it does:
+
+```swift
+// ObscuraClient.swift:1700 — "/// Upload encrypted backup to server."
+let exportData = SyncBlobExporter.export(friends: friendsData, messages: [])
+let etag = try await api.uploadBackup(exportData, etag: backupEtag)
+```
+
+No `BackupCrypto`, no recovery key — and `SyncBlob.swift:36` reads *"In production this would be
+gzipped. For now, raw JSON."* **On iOS the server receives the user's plaintext friend list.**
+
+Two consequences beyond the confidentiality gap:
+
+- **The two kits' `SyncBlob`s are mutually unreadable** — Kotlin gzips, Swift emits raw JSON, and the
+  field sets differ (`type` + `authorDeviceId` vs `isSent`). `DEVICE_LINK_APPROVAL.friendsExport`
+  rides on this, so a Kotlin↔Swift device link transfers **nothing** — before it even reaches
+  Swift's missing `case .deviceLinkApproval`.
+- **The `messages` slot is the legacy TEXT shape, not model entries.** `SyncBlob.kt:33-45` writes
+  `{messageId, conversationId, content, timestamp, type, authorDeviceId}` from `MessageData` — i.e.
+  from `MessageDomain`, **which `RESET.md` deletes**. So "the format already has room, filling it is
+  not new infrastructure" is wrong twice over: wrong shape, and its producer is on the deletion list.
+  There is also no version field in the blob (`{friends, messages, timestamp}`), so changing the
+  shape has no compatibility story.
+
+The *conclusion* below survives all of that — backup is still the server's, still built, still not
+Phase 3 work. The reasoning needed the correction.
+
+**And the blob format has a slot we ship empty.** `SyncBlob.kt:21` is
 `export(friends, messages: Map<…> = emptyMap())` — Kotlin never passes the second argument, Swift
 writes `messages: []` explicitly (`ObscuraClient.swift:1031`, `:1061`), and `pushHistoryToDevice`
-does the same. We are not missing a backup feature; **we are shipping an empty field into a working,
-versioned, encrypted backup.**
+does the same. The slot is the legacy TEXT shape rather than model entries (see the correction
+above), so filling it means defining a new payload — but the **endpoint, the versioning, the
+concurrency control and the transport are all built and unused.**
 
 So filling it later is not new infrastructure on either side, and **Phase 3 owes only that it not
 foreclose the option** — which it does not, for free, since `timestamp` and `author_device_id` stay
@@ -515,7 +630,15 @@ Do it in Phase 3, not Phase 4. Now it costs a path change, a keychain attribute 
 Later it costs a **data migration of the only copy of the user's messages**, on a kit whose migration
 mechanism is P1. The asymmetry is the entire argument: today there is no data worth migrating.
 
-Two things settled with it:
+> **Split under YAGNI (rev 3, 2026-07-25): do the path-and-keychain half now, defer the concurrency
+> machinery.** The argument above is right and cheap *for the path, the keychain attribute and the
+> entitlement* — that half stays in Phase 3. The two items below are **Phase 4**, because the second
+> process they exist to coordinate **is the NSE, which does not exist yet**. Building an advisory-lock
+> protocol and converting the database to `DatabasePool` + WAL to arbitrate between one process and a
+> hypothetical one is machinery ahead of its requirement — and it will be designed better against a
+> real extension, inside a real 30 s / 24 MB budget, than against an imagined one.
+
+Two things settled with it — **both deferred to Phase 4 per the note above**:
 
 - **Single-drainer rule.** The server's per-device notifier is a broadcast and each `MessagePump`
   keeps its own cursor, so app and NSE can both connect, both insert and both notify. Exactly one
@@ -554,6 +677,28 @@ local SPM). So "Kotlin ships first" would break iOS for the whole duration of th
 4. the old surface is deleted, per kit.
 
 Pin kit commits in pix CI for the duration, so step 4 cannot strand an older pix commit.
+
+> **Status of that mitigation (checked 2026-07-25): NOT done, and two things about pix CI change how
+> much this plan can lean on it.**
+>
+> - **The kit checkout floats.** `.github/workflows/ci.yml`'s `android` job checks out
+>   `rhelsing/ObscuraKit-Kotlin` with **no `ref:`**. That float is *deliberate* — the job's own
+>   comment explains it couples pix's green to the kit's `main` and catches cross-repo toolchain
+>   drift — so it should not be pinned permanently. It must be pinned **for the duration of steps
+>   2–4**, because those steps deliberately land a kit deletion before pix can switch. A reminder
+>   now sits in the workflow at the line that has to change.
+> - **There is no iOS job at all** — the jobs are `typecheck`, `domain-tests`, `lint`, `android`. So
+>   the entire argument for this ordering ("Kotlin ships first would break iOS for the whole
+>   duration of the Swift port") is **invisible to CI**: nothing would go red if Swift and pix's one
+>   shared TypeScript surface diverged. The ordering is sound; it is currently enforced by care
+>   rather than by a check.
+>
+> **And step 1's "done" is thinner than it reads.** pix's suite is 12 tests over an 80-line pure
+> function, and `ObscuraModule.ts:11` proxies every native call to a noop under jest
+> (`new Proxy({}, { get: () => noop })`). Nothing that crosses the bridge is testable as configured,
+> which makes **step 3 ("pix switches to the new API") untestable by construction**. What that step
+> needs is an in-memory kit double, not more merge tests. Budget for it there rather than
+> discovering it mid-switch.
 
 ---
 
