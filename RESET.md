@@ -69,7 +69,7 @@ no relationships, and no reactive observation of entries.
 
 | Item | Why |
 |---|---|
-| `conformance/routing.json` + `SPEC §1` | A kit no longer resolves an audience, so it cannot misroute. Note these vectors pin a `recipient` audience for `pix` — but the app actually declares `conversation` for `pix` (`schema.ts`). The vectors were policing a configuration the app does not use. |
+| `conformance/routing.json` + `SPEC §1` | **DO NOT simply delete — five cases HAND OVER. See "The routing.json leak guards" below.** The original reasoning — "a kit no longer resolves an audience, so it cannot misroute" — is a non-sequitur: the risk *moves* to pix, it does not evaporate. (The observation that these vectors pin a `recipient` audience for `pix` while `schema.ts` declares `conversation` still stands, and is why only five of ten cases carry.) |
 | `SPEC §2.1-2.3` (the CRDT prose) | See below: the app needs `APPEND` and `REPLACE`, not a CRDT. |
 | `conformance/merge.json` | **DO NOT simply delete — it MIGRATES. See "The merge.json handover" below.** |
 | `conformance/schema.json` + `SPEC §4` | Kits do not parse app schemas. Swift never adopted this vector, which is a fair signal of its value. |
@@ -113,6 +113,42 @@ normative contract for the kit boundary and the inbox, even once it holds its ow
 What changes is that it stops depending on a *vector file* that no longer has a second implementation
 to hold to account.
 
+> **Sequencing note (2026-07-25).** pix reads the vectors through a **pinned submodule**, so
+> deleting `merge.json` here breaks pix when someone next bumps the pointer — not "the day it
+> lands", as this section previously said. The ordering requirement is unchanged and the urgency is
+> lower; the pin is what buys the time, so do not treat it as slack that has already been spent.
+
+### The `routing.json` leak guards
+
+*(Added 2026-07-25, after review.)* The same argument as `merge.json`, reached from the opposite
+direction. The original justification for deleting these vectors was "a kit no longer resolves an
+audience, so it cannot misroute" — but **the risk moves to `obscura-pix`, it does not evaporate**.
+After the reset, pix resolves every audience, and pix's entire test suite is 12 tests over
+`merge.ts`. Deleting the vectors on that reasoning drops the guards exactly as the code they guard
+arrives somewhere new and untested.
+
+Of the ten cases, **five are fail-safe guards** and must be honoured by the app:
+
+| Case | Why it must survive |
+|---|---|
+| LEAK GUARD: conversation with a malformed 3-party id must fail loud, never broadcast | The named failure mode. A 1:1 payload reaching everyone. |
+| conversation audience with a missing id field must fail loud | Same class — an unresolvable audience must never widen. |
+| recipient audience with a missing recipient field must fail loud | Same. |
+| recipient audience with a blank recipient field must fail loud | Blank is not "everyone". |
+| recipient audience naming a non-friend fails safe to **self only** (never broadcasts) | Fail *safe*, not merely loud. |
+
+The other five pin resolution behaviour for `conversation` / `recipient` / `friends` / `self`
+audiences, which is exactly the resolution logic being deleted from the kits — those retire with the
+engine.
+
+**`SPEC §1.2`'s fail-loud rule must be restated as an application-level rule before `SPEC §1` is
+deleted**, or the normative statement disappears along with the vectors. Sequence as for
+`merge.json`: **pix vendors the five guards and has them passing first; only then delete here.**
+
+> This is not hypothetical. The typing-signal leak fixed on 2026-07-25 (see *Keep*) was precisely
+> "1:1 payload, audience not resolved, broadcast to everyone" — the exact shape of the LEAK GUARD
+> case — living on a code path `routing.json` never covered.
+
 ## Delete — `obscura-pix`
 
 | Item | Evidence |
@@ -148,6 +184,26 @@ Roughly 70% of each kit, and the part whose tests pass:
 - Friend graph (needed to address devices *and* to resolve sender names — `SPEC §0.5`)
 - Attachment encryption / upload / download
 - The message store and the push-wake path
+- **Ephemeral signals — typing and read indicators.** *(Added 2026-07-25, after review.)* These were
+  on **no** inventory, and they are **live**: `ObscuraBridgeModule.kt:528` calls
+  `orm.modelOrNull("directMessage")?.typing(conversationId)`, with iOS equivalents at
+  `ObscuraBridge.swift:447/468/474`. The "how unused was determined" method above counts *calls*, and
+  it missed these because they are reached through the ORM object rather than through the four
+  entry-store calls. `SignalManager.kt` / `ModelSignal.swift` therefore live inside `orm/` while
+  being keep-forever code — **relocate them out of that package before the deletion**, and give
+  `KIT_API.md` §6 a concrete signature rather than the one line it has now.
+  > While confirming this, a live metadata leak was found and fixed in both kits: the signal send
+  > path fanned every `MODEL_SIGNAL` out to `friends.getAccepted()` while `contextId` carried the
+  > 1:1 conversation id, so every accepted friend learned in real time that you were typing to a
+  > *named* third party. It was also a §0.4 violation — the kit resolved an audience nobody gave it.
+  > Fixed by Kotlin PR #47 / Swift PR #15, which apply the two-participant rule the entry path
+  > already used and **fail closed**. Three-party tests pin it; two-party tests cannot see it.
+- **`WireCodec` and `MonotonicClock` — inside `orm/`, and keep-forever.**
+  `WireCodec.decodeType` is on the main receive path (`ObscuraClient.kt:915`) and `wire.json` +
+  `SPEC §3` are explicitly "load-bearing forever" (below). `MonotonicClock` stamps entry timestamps.
+  Swift has the same layout at `Sources/ObscuraKit/ORM/WireCodec.swift`. **Move both out of the
+  package before deleting anything**, or Guardrail 5 invites `rm -r orm/` and takes the wire codec
+  with it.
 - **The `ModelEntry` table itself — the engine dies, the table does not.** *(Added 2026-07-25.)*
   `ModelEntry.sq` already has exactly the columns the thin design needs
   (`model_name`, `entry_id`, `data`, `timestamp`, `author_device_id`), and `ModelStore.kt` writes
@@ -159,9 +215,21 @@ Roughly 70% of each kit, and the part whose tests pass:
   which die with tombstones and `TTLManager` and can be dropped in a later migration.
   On iOS the equivalent table is `model_entries`, which differs — `id` not `entry_id`, a
   `signature BLOB NOT NULL` Kotlin has no counterpart for, and TTL in a separate `ttl` table.
-  **Establish what writes and verifies `signature` before deleting anything on that side**; if it is
-  a real per-entry signature then iOS has an integrity check Android lacks, and the reset would
-  delete the signer. Normalise at the bridge, not by migrating either table.
+  Normalise at the bridge, not by migrating either table.
+  > **`signature` is dead — resolved 2026-07-25, and it is not an integrity check Android lacks.**
+  > `Model.swift:318` hashes `"\(name):\(id):\(timestamp):\(deviceId)"` with keyless SHA-256. It is
+  > unkeyed, so anyone can compute it; it does **not cover `data`**, so it cannot detect tampering
+  > with the entry; it is never verified anywhere; and `LWWMap.swift:121` fabricates an empty `Data()`
+  > for tombstones. It is the same construct `SPEC §3.3` already removed from the wire. Delete it
+  > with the engine.
+  >
+  > **The real problem it exposes is the column's `NOT NULL`, and Swift has no way to drop it.**
+  > Every Swift store is `CREATE TABLE IF NOT EXISTS` — there is no migration mechanism at all — while
+  > prerequisite **P1 gave migrations to Kotlin only**. Swift is the platform whose table shape
+  > actually has to change. **Swift needs P1's equivalent before Phase 3 touches its store**; until
+  > then the only options are "leave a dead NOT NULL column and keep writing a hash nobody reads" or
+  > "wipe the database". With no real users the wipe is acceptable — but it must be a decision, not a
+  > discovery.
 
 For scale: `orm/` is **1,726 lines of 8,683** in the Kotlin kit. This is a deletion, not a rewrite.
 (Re-measured on Kotlin `main` 2026-07-24, after Phases 1–2: **1,679 of 8,390**. The inventory below
@@ -216,4 +284,11 @@ are all still present in `obscura-pix`, which still has no test suite.)
    default test path.
 4. **A doc comment asserting a safety property must cite the test that proves it.** Every lying
    comment found in this audit would have been caught by that one review question.
-5. **Measure this phase in lines deleted.**
+5. **Measure this phase in lines deleted — but never by package.** *(Requalified 2026-07-25.)* The
+   metric is right and the shortcut it invites is not: `orm/` contains `WireCodec`, `MonotonicClock`
+   and `SignalManager`, all of which the kit keeps (see *Keep*). `rm -r orm/` deletes the wire codec
+   the receive path calls and a shipped product feature. Move the keepers out first, then count.
+6. **A capability with zero *entry-store* callers is not necessarily dead.** The method above
+   counts `Obscura.<method>(` call sites, which is how typing indicators — reached through the ORM
+   object, not through `createEntry`/`allEntries` — sat on no inventory while being live on both
+   platforms. Before deleting a subsystem, grep the **bridge** for it as well as `src/`.
