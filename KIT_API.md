@@ -298,16 +298,65 @@ lacks `device_link_approval` — the gap recorded at Phase 2 sign-off). Everythi
 `else -> { }` (`ObscuraClient.kt:1011`) or `default: break` (`ObscuraClient.swift`, `routeMessage`)
 and is then **acked and destroyed**:
 
-| Arm | §4 class | Status |
-|---|---|---|
-| `device_recovery_announce` | Kit-internal | **Unimplemented.** Recovery is a real feature; needs implementing or an explicit deferral. |
-| `history_chunk`, `sync_request` | Kit-internal | **Unimplemented.** The pre-`SyncBlob` onboarding path (§8.4); likely `RESET.md` deletions. |
-| `content_reference`, `chunked_content_reference` | Inboxed | **Sent by both kits, received by neither** — see §4.3. |
-| `settings_sync`, `read_sync` | — | Deleted, §4.3. |
-
 If these were merely routed to the inbox by the unknown-arm rule, the inbox would become the place
-kit-internal work goes to be forgotten, and §4's classification would stop meaning anything. Each row
-above needs its own resolution before the inbox ships.
+kit-internal work goes to be forgotten, and §4's classification would stop meaning anything. So each
+one is resolved here, before the inbox ships.
+
+**The question that resolves them is "who sends it".** An arm nobody sends cannot lose data, whatever
+the receiver does; an arm something sends and nothing receives is either a bug or an unfinished
+feature, and the difference is whether the sender can fire in the running app.
+
+| Arm | Sender | Receiver | Reachable from the app? | **Resolution** |
+|---|---|---|---|---|
+| `sync_request` | both kits | none | no caller | **Delete** |
+| `history_chunk` | **none** | none | — | **Delete** |
+| `content_reference` | both kits | none | no caller | **Delete**, with its send methods |
+| `chunked_content_reference` | **none** | none | — | **Delete** |
+| `device_recovery_announce` | both kits | none | **no — gated off** | **Keep the arm, defer the handler** |
+
+**Four deletions.** `history_chunk` and `chunked_content_reference` have no sender anywhere, so they
+are dead on both sides. The other two are one-sided and neither costs anything to remove:
+
+- **`sync_request` is the pull half of device linking, and the push half already works.**
+  `ClientSyncManager.pushHistoryToDevice` sends `SYNC_BLOB`, both kits handle it, and
+  `DeviceManager.kt:149` / `ObscuraClient.swift:1084` fire it when a device links. `sync_request`
+  (`ClientSyncManager.kt:25`, `ObscuraClient.swift:1015`) is a request nobody answers, and its public
+  `requestSync()` has no caller outside the kit.
+- **`content_reference`** — see §4.3; pix's attachments never use the arm.
+
+**One deferral, and it is a deferral rather than a bug.** `device_recovery_announce` is built by
+`RecoveryManager.kt:48` and `ObscuraClient.swift:1688` and handled by neither kit — but
+`ObscuraConfig.enableRecoveryPhrase` defaults to **`false`**, pix never sets it, and pix has **zero**
+recovery UI, so `announceRecovery` throws before it can send. Nothing in the running app emits this.
+Recovery is a real subsystem — the server's backup side is fully built and E2E-encrypted (§8.4) — so
+deleting the arm is wrong; building a receive handler for a flag that is off, with no UI, is the
+speculative work Phase 3 is explicitly not doing (`PLAN.md`, "Explicitly NOT in Phase 3").
+
+> **What must change now is the test, not the code.** `RecoveryMessagingTests` exists in **both** kits
+> and asserts only that the wire message *arrives*:
+>
+> ```swift
+> XCTAssertEqual(msg.type, "DEVICE_RECOVERY_ANNOUNCE")
+> XCTAssertTrue(clientMsg.deviceRecoveryAnnounce.isFullRecovery)
+> ```
+>
+> Nothing asserts the recipient's friend graph or device list changed — because nothing changes them.
+> The test passes identically whether or not a handler exists, and none does. That is a delivery test
+> named like a feature test: the same false-green pattern the F-findings were about. Rename it and
+> state the unimplemented receive half in the file, so the gap is legible to the next reader instead
+> of being contradicted by a green tick.
+
+**When the handler is eventually built, note the trap.** `device_recovery_announce` carries
+`recovery_public_key` *inside the message whose signature it authenticates*, so the naive
+implementation verifies an attacker's signature with the attacker's own key. It must verify against
+the **stored** key for that user and treat a first key as TOFU. The neighbouring handler shows the
+shape to avoid: `handleDeviceAnnounce` verifies against `friend.recoveryPublicKey` but its `if let`
+falls through, so it **accepts an unsigned device list when no key is stored yet**
+(`ObscuraClient.swift`, `case .deviceAnnounce`).
+
+**Net effect on the wire.** With these four, plus `settings_sync` / `read_sync` (§4.3) and `text`
+(already a `RESET.md` deletion), `client.proto` goes from **18 payload arms to 11** — and the inbox's
+classification table, which every kit must implement and keep in step, shrinks with it.
 
 ### 4.3 Arms with no implementation on either side
 
@@ -330,10 +379,14 @@ pix's attachments do not use this arm at all. They ride **inside a `model_sync` 
 `RecipientPicker.tsx:58` puts `mediaRef` / `contentKey` / `nonce` on the story model — and the bytes
 are fetched by id afterwards. That is a coherent design and it is the one in production.
 
-So §4 currently classifies as "Inboxed" a path with **no sender and no receiver in the live app**.
-Two honest options, and this is a `RESET.md` decision rather than an inbox one: delete the unused
-send methods along with the arms, or keep the arms as the documented protocol and mark them
-unimplemented. What is not an option is leaving the table asserting they are a live inbox path.
+So §4 was classifying as "Inboxed" a path with **no sender and no receiver in the live app**.
+
+**Resolved (§4.2): delete both arms and the send methods with them.** `chunked_content_reference` has
+no sender at all; `content_reference`'s only senders are kit-public methods the bridge does not
+expose. The attachment *bytes* path — `uploadAttachment` / `downloadAttachment`, `AttachmentCrypto`,
+the attachment cache — is untouched by this: it is the reference **message** that is dead, not
+attachments. Keeping the arm "as documented protocol" would mean shipping a classification that
+asserts a live inbox path where there is no sender, no receiver and no caller.
 
 ---
 
@@ -815,12 +868,17 @@ Pin kit commits in pix CI for the duration, so step 4 cannot strand an older pix
   triggered wipe of real mail.
 - ~~Does the app ever need to write to the inbox?~~ **Answered (§3.3 rule 9):** no. Self-sync reaches
   other devices through the ordinary envelope path; the originating device writes to its own store.
-- **New, from §4.2:** `device_recovery_announce`, `history_chunk` and `sync_request` are classified
-  kit-internal and implemented by neither kit — silently acked and destroyed today. Implement,
-  delete, or explicitly defer each before the inbox ships.
-- **New, from §4.3:** `content_reference` / `chunked_content_reference` are sent by both kits,
-  received by neither, and unused by the app. A `RESET.md` decision: delete the send methods with
-  the arms, or keep them marked unimplemented.
+- ~~The five arms classified in §4 that neither kit implements.~~ **Answered (§4.2):** four are
+  deleted (`sync_request`, `history_chunk`, `content_reference`, `chunked_content_reference`) and
+  `device_recovery_announce` keeps its arm with the handler deferred — it cannot fire, because
+  `enableRecoveryPhrase` defaults to `false` and pix has no recovery UI. `client.proto` goes from 18
+  arms to 11.
+- **New, from §4.2:** `RecoveryMessagingTests` in **both** kits asserts only that the wire message
+  arrives, so it passes with no handler — a delivery test named like a feature test. Rename and
+  annotate; tracked as kit work, not proto work.
+- **New, from §4.2:** when the recovery handler is built, it must verify against the **stored**
+  recovery key, never the one inside the message. `handleDeviceAnnounce` already accepts an unsigned
+  device list when no key is stored — worth closing at the same time.
 - Template miss / first-run / null-name / locale behaviour for notifications (§7).
 - ~~Multi-device convergence and backup — whose problem, and in which phase?~~ **Answered (§8.4):**
   the server's, already built; the client fills `SyncBlob`'s empty `messages` slot in a later phase.

@@ -749,7 +749,17 @@ decision rather than a place in the deletion inventory.
   app **never writes to the inbox** — three methods, no `insert` (§3.3 rule 9). `settings_sync` and
   `read_sync` are **deleted** rather than classified: they have zero implementations anywhere (§4.3).
   That sweep also found five arms in the classification table that **neither kit implements** and
-  that are acked and destroyed today; each needs its own resolution before the inbox ships (§4.2).
+  that are acked and destroyed today. All five are now resolved (§4.2): **four are deleted**
+  (`sync_request`, `history_chunk`, `content_reference`, `chunked_content_reference` — none has both
+  a sender and a caller), and `device_recovery_announce` **keeps its arm with the handler deferred**,
+  because `enableRecoveryPhrase` defaults to `false` and pix has no recovery UI, so nothing can emit
+  it. With `text`, the wire goes from **18 payload arms to 11** — the classification table the inbox
+  must implement shrinks by more than a third before a line of it is written.
+- **Two pieces of kit work fall out of that sweep**, neither of which is a deletion:
+  `RecoveryMessagingTests` (both kits) asserts only that the wire message arrives and so passes with
+  no handler — rename and annotate it rather than leave a green tick over an unimplemented feature.
+  And `handleDeviceAnnounce` **accepts an unsigned device list when no recovery key is stored yet**;
+  worth closing when the recovery handler is eventually built (`KIT_API.md` §4.2).
 - **Define the thin kit's API first — drafted in [`KIT_API.md`](KIT_API.md).** It is an **inbox**,
   not an event stream: any design where the kit hands a payload to the app and then acks puts a
   server-side DELETE ahead of the app's durable write, across an async bridge, on a path where the
