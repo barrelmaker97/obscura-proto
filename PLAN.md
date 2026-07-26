@@ -743,6 +743,13 @@ reconnect path, so a red run during the deletion is not automatically your diff.
 cannot receive a `DEVICE_LINK_APPROVAL` — sits in code the reset **keeps**, so it needs its own
 decision rather than a place in the deletion inventory.
 
+- **The three open API design questions are now closed (2026-07-26), before any code.** Unknown arms
+  are **inboxed unparsed** rather than left unacked, because declining to ack composes with the
+  server's oldest-first eviction into a remotely triggered wipe of real mail (`KIT_API.md` §4.1). The
+  app **never writes to the inbox** — three methods, no `insert` (§3.3 rule 9). `settings_sync` and
+  `read_sync` are **deleted** rather than classified: they have zero implementations anywhere (§4.3).
+  That sweep also found five arms in the classification table that **neither kit implements** and
+  that are acked and destroyed today; each needs its own resolution before the inbox ships (§4.2).
 - **Define the thin kit's API first — drafted in [`KIT_API.md`](KIT_API.md).** It is an **inbox**,
   not an event stream: any design where the kit hands a payload to the app and then acks puts a
   server-side DELETE ahead of the app's durable write, across an async bridge, on a path where the
