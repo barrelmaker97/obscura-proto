@@ -59,9 +59,10 @@ no relationships, and no reactive observation of entries.
 | `conversations` StateFlow, `messagesDomain` | Not on the bridge. The app builds conversation views from ORM entries in `ChatListScreen`/`ChatScreen`. |
 | `ObscuraConfig.conversationModel` | `SPEC §0.4`: config that names an application concept is proof the boundary was already crossed. |
 | `ProcessedCounts.pixCount` / `messageCount` (and `otherCount`) | Kit knowing app model names. Push counts by opaque model key; copy comes from templates the app registers. |
-| `DatabaseMigrations` | Greenfield, no installed base, no external users. Bump the schema and wipe. (I wrote a correct version of this today. Correct-and-unnecessary is still a maintenance surface.) **(Verified gone from Kotlin `main` 2026-07-24.)** |
+| `DatabaseMigrations` (the hand-rolled Kotlin class) | Greenfield, no installed base, no external users. (I wrote a correct version of this today. Correct-and-unnecessary is still a maintenance surface.) **(Verified gone from Kotlin `main` 2026-07-24.)** ⚠️ **This row is about one deleted class, not about migrations as such — do not read "bump the schema and wipe" as the current policy.** `KIT_API.md` P1 reversed that, and both kits now HAVE a migration mechanism: SQLDelight `.sqm` on Kotlin, `ObscuraSchema` + `DatabaseMigrator` on Swift. That is what makes this phase's table *deletions* expressible at all. *(Clarified 2026-07-26.)* |
 | `SessionSnapshot` / `saveSnapshot` / `loadSnapshot` | Unreferenced by production code; its `toMap()` writes `authToken` where the reader wants `token`; its KDoc urges adoption. Already removed this session. |
-| Recovery phrase / BIP39 / encrypted backups / remote revocation | No bridge method exposes any of it. **Verify before deleting** — this may be intended product, not dead code. Flagged, not condemned. |
+| Recovery phrase / BIP39 / encrypted backups / remote revocation | No bridge method exposes any of it. ~~**Verify before deleting**~~ — **verified 2026-07-26: KEEP. This is intended product, not dead code.** The server side is fully built and E2E-encrypted (`KIT_API.md` §8.4), and the client half is gated behind `ObscuraConfig.enableRecoveryPhrase`, which defaults to `false` and which pix never sets — so "no bridge method" reflects a feature that is **off**, not one that is dead. Moved to the Keep list; see the `device_recovery_announce` row below. |
+| `requestSync()` / `ClientSyncManager` sync-request path; `sendEncryptedAttachment` / `sendAttachmentReference` | *Added 2026-07-26.* The senders for the deleted `sync_request` and `content_reference` arms (`KIT_API.md` §4.2). Both are kit-public with **no caller** — not on the bridge, not used by the app. `sync_request`'s pull half is redundant with `pushHistoryToDevice` → `SYNC_BLOB`, which is handled and does fire on device link. **Does not touch the attachment bytes path** — `uploadAttachment` / `downloadAttachment` / `AttachmentCrypto` / the attachment cache all stay; pix's attachments ride inside a `model_sync` entry. |
 | `gatewayUrl` config field | Verified unused in kit source; already `@Deprecated`. |
 | Binary-compat validator (`lib/api/lib.api`) as a *compatibility gate* | The kit has one consumer and no API-stability obligation (`SPEC §0.1`). **Keep the file, change its job** — see Guardrails. |
 
@@ -73,6 +74,7 @@ no relationships, and no reactive observation of entries.
 | `SPEC §2.1-2.3` (the CRDT prose) | See below: the app needs `APPEND` and `REPLACE`, not a CRDT. |
 | `conformance/merge.json` | **DO NOT simply delete — it MIGRATES. See "The merge.json handover" below.** |
 | `conformance/schema.json` + `SPEC §4` | Kits do not parse app schemas. Swift never adopted this vector, which is a fair signal of its value. |
+| **Six `client.proto` payload arms** — `settings_sync` (41), `read_sync` (42), `history_chunk` (40), `sync_request` (47), `content_reference` (45), `chunked_content_reference` (46) | *Added 2026-07-26.* Decided in `KIT_API.md` §4.2/§4.3 from a sender/receiver sweep. `settings_sync`, `read_sync`, `history_chunk` and `chunked_content_reference` have **no implementation on either side, anywhere**. `sync_request` and `content_reference` are sent by both kits, received by neither, and called by nothing outside the kits. **`reserved` the field numbers** — do not recycle them. With `text` (below) this takes the wire from **18 arms to 11**. |
 
 **Keep:** `conformance/wire.json` + `SPEC §3` — load-bearing forever. Two kits must encode
 and decode identically. **Keep** `SPEC §2.4` (future-timestamp clamp): it applies to any
@@ -182,8 +184,27 @@ Roughly 70% of each kit, and the part whose tests pass:
 - Device provisioning, linking, approval, revocation, takeover
 - Transport: REST + gateway WebSocket, envelope ack, offline send queue (`network/`, 700 lines)
 - Friend graph (needed to address devices *and* to resolve sender names — `SPEC §0.5`)
-- Attachment encryption / upload / download
+- Attachment encryption / upload / download — **the bytes path.** The `content_reference` *message*
+  is a deletion (above); `uploadAttachment` / `downloadAttachment` / `AttachmentCrypto` / the
+  attachment cache are not. pix's attachments ride inside a `model_sync` entry, so deleting the arm
+  does not touch a single line the app depends on. Do not conflate the two.
 - The message store and the push-wake path
+- **Recovery: the `device_recovery_announce` arm, `RecoveryManager`, `RecoveryKeys`, `BackupCrypto`,
+  `SyncBlob`.** *(Added 2026-07-26.)* The receive half is **unimplemented in both kits** — the arm
+  falls through `routeMessage` and is acked — which reads like dead code and is not. The sender is
+  gated behind `enableRecoveryPhrase = false` and pix ships no recovery UI, so nothing can currently
+  emit it; the server side is fully built and E2E-encrypted (`KIT_API.md` §8.4). **Deliberately
+  deferred, not deleted** (`KIT_API.md` §4.2). Two things go with that decision:
+  > **The tests are false-green.** `RecoveryMessagingTests` exists in both kits and asserts only that
+  > the wire message *arrives* — never that the recipient's friend graph or device list changed. It
+  > passes identically with no handler, and there is no handler. Rename and annotate it; a green tick
+  > over an unimplemented feature is the exact pattern the F-findings were about.
+  >
+  > **The handler has a trap waiting.** `device_recovery_announce` carries `recovery_public_key`
+  > *inside the message whose signature it authenticates*, so the naive implementation verifies an
+  > attacker's signature with the attacker's own key. Verify against the **stored** key; TOFU only on
+  > the first. `handleDeviceAnnounce` shows the shape to avoid — its `if let` falls through, so it
+  > **accepts an unsigned device list when no key is stored yet**.
 - **Ephemeral signals — typing and read indicators.** *(Added 2026-07-25, after review.)* These were
   on **no** inventory, and they are **live**: `ObscuraBridgeModule.kt:528` calls
   `orm.modelOrNull("directMessage")?.typing(conversationId)`, with iOS equivalents at

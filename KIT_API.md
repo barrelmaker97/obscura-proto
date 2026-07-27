@@ -140,6 +140,17 @@ or a declared `client.proto` field — nothing is parsed out of `payload`.
 8. **The inbox MUST be keyed `UNIQUE` on `envelopeId` and insert with `INSERT OR IGNORE`.**
    *(New in rev 3, 2026-07-25.)* Without this the design is **strictly less idempotent than the code
    it replaces**, which is the opposite of what §2 claims for it.
+9. **The inbox is kit-write, app-read-and-delete. There is no `insert` on the API.** *(Decided
+   2026-07-26.)* The only candidate for an app-side write was self-sync, and self-sync does not need
+   one: a send fans out to the user's **other** devices via the server (`deliver(to: nil,
+   toSelf: true)` in both `SyncManager`s), and those devices receive it through the ordinary
+   envelope path, so it lands in their inbox the same way a friend's message does. The
+   **originating** device is not echoed to and never was — it writes the entry to its own store
+   directly, which is an app store write, not an inbox write. Routing it through the inbox would
+   mean the app posting a message to itself to read it back a tick later, and it would put a
+   locally-authored row into a table whose entire contract is *"this arrived from the server,
+   authenticated, and the server's copy is already gone"*. Three methods, and no fourth
+   (cf. §8.1's three bridge methods and §9's rule about query APIs).
 
 ### 3.3.1 Why the dedupe key is not optional
 
@@ -234,12 +245,148 @@ arm MUST be classified, because the classification is what makes §0.9 checkable
 | `sync_blob`, `sent_sync`, `history_chunk`, `sync_request` | Kit-internal | Own-device sync. |
 | `model_signal` | **Droppable** | Typing/read indicators. `client.proto` says "in-memory only". |
 | `text` | — | Legacy; deleted by `RESET.md`. |
-| `settings_sync`, `read_sync` | **UNDECIDED** | Decide before coding. Both look like application concerns that should be `model_sync`, not their own arms. |
-| *unknown / future arm* | **MUST NOT be silently dropped** | Today `routeMessage`'s `else` branch falls through to the ack, destroying it. Either inbox it unparsed or decline to ack. |
+| `settings_sync`, `read_sync` | **DELETE** | *Decided 2026-07-26.* Zero implementations anywhere — see §4.3. |
+| *arm absent from this table* | **Inboxed, unparsed** | *Decided 2026-07-26.* Not "decline to ack" — that is a remote wipe primitive. See §4.1. |
 
 **`SPEC.md` §0.9 needs a matching sentence**: *a payload with no durable delivery guarantee,
 enumerated in the proto, MAY be acked without persistence.* Without it, §0.9 is a rule the code
 cannot follow — and unfollowable rules are how the last round of false claims started (§0.8).
+
+### 4.1 Unknown arms: inbox them unparsed (decided 2026-07-26)
+
+The question was *inbox it unparsed, or decline to ack.* **Decline-to-ack is not a safe default here,
+and the reason is on the server, not the client.**
+
+Any authenticated user can send to any device — friendship is not required to deliver, as both kits'
+own `FRIEND_RESPONSE` handlers say out loud (`ObscuraClient.kt:1046`, `ObscuraClient.swift:1936`).
+A never-acked message is never deleted, so it redelivers on every reconnect, forever. And the
+server's per-device queue is capped at `max_inbox_size: 1000` with `ttl_days: 30`, evicting
+**oldest-first and silently** (§3.4's rev-2 correction). Compose those three facts:
+
+> a stranger sends unknown arms in a loop → the kit declines to ack each one → they accumulate on
+> the server → the cap is reached → the server evicts **oldest-first**, which is your real
+> undelivered mail → permanent, silent loss, triggered remotely, by an unauthenticated-to-you peer.
+
+Declining to ack is the right answer when the failure is **ours and transient** — disk full, a
+migration not yet applied, a store that will work on the next launch (§0.9 rules 1–3). An unknown arm
+is neither ours nor transient: retrying it changes nothing, so the retry is unbounded by
+construction.
+
+**So: an arm absent from the §4 table is persisted as an inbox row and acked.** Concretely:
+
+- `kind` = the arm's proto field name; `payload` = that arm's serialized bytes.
+- `modelKey`, `entryId`, `op`, `sentAt` are `null` — they are `ModelSync`-derived and there is no
+  `ModelSync` here. The kit does not look inside the bytes (§0 boundary).
+- `envelopeId` dedupes it like any other row (§3.3 rule 8).
+- The app drains it, cannot process it, and calls `discard(ids, reason)` — data loss that is
+  **chosen and logged**, which is exactly what rule 5 exists for.
+
+> **This is the condition on §3.4's deferral.** With `after:` deferred, a row the app will not
+> process sits at the head of the drain forever. So pix's drain MUST treat an unrecognised `kind` as
+> `discard`, not as "skip and try again later". That is one branch in pix's drain loop, and it is
+> what keeps the missing cursor from mattering. If it is ever cheaper to add the cursor than to hold
+> that line, add the cursor.
+
+### 4.2 An arm in the table but unimplemented is a kit bug, not an unknown arm
+
+The fallback above keys on **absence from the classification table**, not on absence from
+`routeMessage`'s switch. The distinction is load-bearing, because today those two sets are very
+different.
+
+`routeMessage` handles **11 of 18** arms in Kotlin and **10 of 18** in Swift (Swift additionally
+lacks `device_link_approval` — the gap recorded at Phase 2 sign-off). Everything else reaches
+`else -> { }` (`ObscuraClient.kt:1011`) or `default: break` (`ObscuraClient.swift`, `routeMessage`)
+and is then **acked and destroyed**:
+
+If these were merely routed to the inbox by the unknown-arm rule, the inbox would become the place
+kit-internal work goes to be forgotten, and §4's classification would stop meaning anything. So each
+one is resolved here, before the inbox ships.
+
+**The question that resolves them is "who sends it".** An arm nobody sends cannot lose data, whatever
+the receiver does; an arm something sends and nothing receives is either a bug or an unfinished
+feature, and the difference is whether the sender can fire in the running app.
+
+| Arm | Sender | Receiver | Reachable from the app? | **Resolution** |
+|---|---|---|---|---|
+| `sync_request` | both kits | none | no caller | **Delete** |
+| `history_chunk` | **none** | none | — | **Delete** |
+| `content_reference` | both kits | none | no caller | **Delete**, with its send methods |
+| `chunked_content_reference` | **none** | none | — | **Delete** |
+| `device_recovery_announce` | both kits | none | **no — gated off** | **Keep the arm, defer the handler** |
+
+**Four deletions.** `history_chunk` and `chunked_content_reference` have no sender anywhere, so they
+are dead on both sides. The other two are one-sided and neither costs anything to remove:
+
+- **`sync_request` is the pull half of device linking, and the push half already works.**
+  `ClientSyncManager.pushHistoryToDevice` sends `SYNC_BLOB`, both kits handle it, and
+  `DeviceManager.kt:149` / `ObscuraClient.swift:1084` fire it when a device links. `sync_request`
+  (`ClientSyncManager.kt:25`, `ObscuraClient.swift:1015`) is a request nobody answers, and its public
+  `requestSync()` has no caller outside the kit.
+- **`content_reference`** — see §4.3; pix's attachments never use the arm.
+
+**One deferral, and it is a deferral rather than a bug.** `device_recovery_announce` is built by
+`RecoveryManager.kt:48` and `ObscuraClient.swift:1688` and handled by neither kit — but
+`ObscuraConfig.enableRecoveryPhrase` defaults to **`false`**, pix never sets it, and pix has **zero**
+recovery UI, so `announceRecovery` throws before it can send. Nothing in the running app emits this.
+Recovery is a real subsystem — the server's backup side is fully built and E2E-encrypted (§8.4) — so
+deleting the arm is wrong; building a receive handler for a flag that is off, with no UI, is the
+speculative work Phase 3 is explicitly not doing (`PLAN.md`, "Explicitly NOT in Phase 3").
+
+> **What must change now is the test, not the code.** `RecoveryMessagingTests` exists in **both** kits
+> and asserts only that the wire message *arrives*:
+>
+> ```swift
+> XCTAssertEqual(msg.type, "DEVICE_RECOVERY_ANNOUNCE")
+> XCTAssertTrue(clientMsg.deviceRecoveryAnnounce.isFullRecovery)
+> ```
+>
+> Nothing asserts the recipient's friend graph or device list changed — because nothing changes them.
+> The test passes identically whether or not a handler exists, and none does. That is a delivery test
+> named like a feature test: the same false-green pattern the F-findings were about. Rename it and
+> state the unimplemented receive half in the file, so the gap is legible to the next reader instead
+> of being contradicted by a green tick.
+
+**When the handler is eventually built, note the trap.** `device_recovery_announce` carries
+`recovery_public_key` *inside the message whose signature it authenticates*, so the naive
+implementation verifies an attacker's signature with the attacker's own key. It must verify against
+the **stored** key for that user and treat a first key as TOFU. The neighbouring handler shows the
+shape to avoid: `handleDeviceAnnounce` verifies against `friend.recoveryPublicKey` but its `if let`
+falls through, so it **accepts an unsigned device list when no key is stored yet**
+(`ObscuraClient.swift`, `case .deviceAnnounce`).
+
+**Net effect on the wire.** With these four, plus `settings_sync` / `read_sync` (§4.3) and `text`
+(already a `RESET.md` deletion), `client.proto` goes from **18 payload arms to 11** — and the inbox's
+classification table, which every kit must implement and keep in step, shrinks with it.
+
+### 4.3 Arms with no implementation on either side
+
+*(Findings from the 2026-07-26 sweep. These change what §4 is classifying.)*
+
+**`settings_sync` and `read_sync` have zero implementations anywhere.** Not "unused by pix" — a
+grep across both kits, pix and the server finds them only in generated protobuf and one Swift
+`WireCodec` name mapping. Nothing constructs them, nothing sends them, nothing receives them. They
+were speculative arms, and classifying them would be designing for a message that does not exist.
+**Delete both from `client.proto` and `reserved 41, 42;`.** That answers the §11 question by removing
+its subject. (This also disposes of the related §11 note: `pix/src/models/schema.ts:35` declares a
+`settings` model with zero references in `src/` — re-confirmed 2026-07-26. Four live models.)
+
+**`content_reference` / `chunked_content_reference` are sent by both kits and received by neither,
+and the app calls neither sender.** `MessagingManager.kt:54` and `ObscuraClient.swift:1243` build
+them; nothing handles them on receive; and pix's bridge exposes only `uploadAttachment` /
+`downloadAttachment` (`src/native/ObscuraModule.ts:147`), not the reference-sending API.
+
+pix's attachments do not use this arm at all. They ride **inside a `model_sync` entry** —
+`RecipientPicker.tsx:58` puts `mediaRef` / `contentKey` / `nonce` on the story model — and the bytes
+are fetched by id afterwards. That is a coherent design and it is the one in production.
+
+So §4 was classifying as "Inboxed" a path with **no sender and no receiver in the live app**.
+
+**Resolved (§4.2): delete both arms and the send methods with them.** `chunked_content_reference` has
+no sender at all; `content_reference`'s only senders are kit-public methods the bridge does not
+expose. The attachment *bytes* path — `uploadAttachment` / `downloadAttachment`, `AttachmentCrypto`,
+the attachment cache — is untouched by this: it is the reference **message** that is dead, not
+attachments. Keeping the arm "as documented protocol" would mean shipping a classification that
+asserts a live inbox path where there is no sender, no receiver and no caller.
 
 ---
 
@@ -655,14 +802,23 @@ key-value store turns every merge into a read-modify-rewrite of the whole model,
 approximately what `allEntries`-refetch-everything does today, and that pattern is being deleted
 *because* it does not scale.
 
-This is also the largest single piece of Phase 3 work (§8.1) and the easiest to default into by
-accident, which is why it is written down as a decision rather than left to whoever starts first.
+It is the easiest choice to default into by accident, which is why it is written down as a decision
+rather than left to whoever starts first.
+
+> **Correction (2026-07-26).** This paragraph used to end "this is also the largest single piece of
+> Phase 3 work (§8.1)", which **contradicts the §8.1 correction two sections above it**: the SQLite
+> store already exists as `ModelEntry`, with the columns this design needs, and pix takes ownership
+> of it across the bridge rather than building one. What P3 actually decides is only that the store
+> stays SQLite and stays native. The long pole moved: it is now the **in-memory kit double** that
+> makes migration step 3 testable at all (see the status note under "Order"), not the store.
 
 ### Order
 
 1. **P1** — unblocks every later schema change, additive or destructive.
 2. **P2** — cheapest while there is no data.
-3. **P3** + pix's test suite — the long pole; `merge.json`'s portable cases become its first tests.
+3. **P3** + pix's test suite — `merge.json`'s portable cases become its first tests. **Done as far
+   as merge goes** (`src/domain/merge.ts`, 22 passing tests). What remains here is the **in-memory
+   kit double** — the long pole, per the correction under P3 and the status note below.
 4. Then the inbox itself, Kotlin designing first.
 
 **Migration order** — pix cannot compile against a kit whose old API is gone, and it has **one**
@@ -704,13 +860,25 @@ Pin kit commits in pix CI for the duration, so step 4 cannot strand an older pix
 
 ## 11. Still open
 
-- `settings_sync` / `read_sync` classification (§4). Note the `settings` **model** is declared in
-  `pix/src/models/schema.ts` and has **zero references anywhere in `src/`** (checked 2026-07-25) —
-  four live models, not five. Confirm whether that moots the `settings_sync` half before designing
-  for it.
-- Unknown-arm policy: inbox unparsed, or decline to ack (§4)?
-- Does the app ever need to write to the inbox? Probably not — self-sync arrives through the normal
-  receive path — but confirm before building.
+- ~~`settings_sync` / `read_sync` classification (§4).~~ **Answered (§4.3):** both have zero
+  implementations anywhere — delete the arms and reserve 41, 42. The `settings` model's zero
+  references are re-confirmed; four live models, not five.
+- ~~Unknown-arm policy: inbox unparsed, or decline to ack (§4)?~~ **Answered (§4.1):** inbox it
+  unparsed. Declining to ack composes with the server's oldest-first eviction into a remotely
+  triggered wipe of real mail.
+- ~~Does the app ever need to write to the inbox?~~ **Answered (§3.3 rule 9):** no. Self-sync reaches
+  other devices through the ordinary envelope path; the originating device writes to its own store.
+- ~~The five arms classified in §4 that neither kit implements.~~ **Answered (§4.2):** four are
+  deleted (`sync_request`, `history_chunk`, `content_reference`, `chunked_content_reference`) and
+  `device_recovery_announce` keeps its arm with the handler deferred — it cannot fire, because
+  `enableRecoveryPhrase` defaults to `false` and pix has no recovery UI. `client.proto` goes from 18
+  arms to 11.
+- **New, from §4.2:** `RecoveryMessagingTests` in **both** kits asserts only that the wire message
+  arrives, so it passes with no handler — a delivery test named like a feature test. Rename and
+  annotate; tracked as kit work, not proto work.
+- **New, from §4.2:** when the recovery handler is built, it must verify against the **stored**
+  recovery key, never the one inside the message. `handleDeviceAnnounce` already accepts an unsigned
+  device list when no key is stored — worth closing at the same time.
 - Template miss / first-run / null-name / locale behaviour for notifications (§7).
 - ~~Multi-device convergence and backup — whose problem, and in which phase?~~ **Answered (§8.4):**
   the server's, already built; the client fills `SyncBlob`'s empty `messages` slot in a later phase.
