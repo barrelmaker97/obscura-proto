@@ -768,14 +768,47 @@ the wipe mechanism it refers to was itself deleted.
 
 ### P2 — the store moves to an App Group container, now (decided)
 
-The iOS NSE cannot reach today's store on two counts: the DB path is `.applicationSupportDirectory`
-(app-private, not an App Group) and the SQLCipher key is stored with no `kSecAttrAccessGroup`, so an
-extension in a different bundle id cannot read it. **The inbox and the entry table (§8.1) share that
-database, so this decides where both live.**
+The iOS NSE cannot reach today's store on ~~two~~ **three** counts: the DB path is
+`.applicationSupportDirectory` (app-private, not an App Group), the SQLCipher key is stored with no
+`kSecAttrAccessGroup`, so an extension in a different bundle id cannot read it — and **the session
+token is in the same position**. **The inbox and the entry table (§8.1) share that database, so this
+decides where both live.**
+
+> **Third count added 2026-07-26, while implementing this.** The drafted version named only the
+> database and its key, which is necessary and not sufficient. **There is no REST message fetch** —
+> `POST /v1/messages` is send-only and delivery is exclusively the gateway WebSocket (see Phase 4's
+> note in `PLAN.md`). So an NSE must `POST /v1/gateway/ticket` before it can receive anything, and
+> that needs the auth token, which pix keeps in `KeychainSession` under `kSecAttrService` with no
+> access group. An NSE that can open the database but cannot authenticate does nothing at all.
+>
+> Two things follow that are easy to get wrong and are worth stating once:
+>
+> - **A keychain item cannot change access group in place.** It must be deleted and re-created. So
+>   the pre-move item survives the switch, and a query naming a group only matches that group — the
+>   old copy is unreachable rather than gone. For a *bearer token* that means logout leaves a live
+>   credential in the keychain permanently unless the delete explicitly targets both groups.
+> - **The token must be `kSecAttrAccessibleAfterFirstUnlock`, not `…WhenUnlocked`.** An NSE runs
+>   while the device is locked; an item it cannot read is an extension that cannot authenticate. The
+>   SQLCipher key already uses the `…ThisDeviceOnly` variant of the same class.
+>
+> Implemented in obscura-pix PR #60, which also records why the App Group id is used directly as the
+> keychain access group rather than adding a `keychain-access-groups` entitlement: that entitlement's
+> **first** entry becomes the default group for items that do not name one, which silently relocates
+> existing items.
 
 Do it in Phase 3, not Phase 4. Now it costs a path change, a keychain attribute and an entitlement.
 Later it costs a **data migration of the only copy of the user's messages**, on a kit whose migration
 mechanism is P1. The asymmetry is the entire argument: today there is no data worth migrating.
+
+**Status: the app half is implemented (obscura-pix PR #60, 2026-07-26); the kit half needed no
+change.** `ObscuraClient.init(…, keychainAccessGroup:)` already plumbs through to
+`DatabaseSecret.getOrCreate`, and the kit has always taken `dataDirectory` from the caller — so P2
+was app-side in its entirety. **It is not proven, and cannot be here:** pix CI has no iOS job and the
+kit does not build on Linux, so nothing in CI executes this path. Two things gate it actually
+working, both outside the code: the App Group must be **registered in the Apple Developer portal**,
+and an unregistered group yields a `nil` container at runtime rather than a build error. pix's
+`SharedContainer` therefore degrades to the pre-P2 behaviour and logs loudly on every launch instead
+of failing — treat a quiet log, not a green build, as the evidence.
 
 > **Split under YAGNI (rev 3, 2026-07-25): do the path-and-keychain half now, defer the concurrency
 > machinery.** The argument above is right and cheap *for the path, the keychain attribute and the
