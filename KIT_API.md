@@ -859,13 +859,36 @@ TypeScript surface for both platforms with both kits consumed from source (Gradl
 local SPM). So "Kotlin ships first" would break iOS for the whole duration of the Swift port:
 
 1. pix gains its test suite **(done, PR #56)** and takes ownership of the existing `ModelEntry`
-   table across the bridge (§8.1);
+   table across the bridge (§8.1) — **DONE 2026-07-28**, via `EntryStore` in both kits
+   (Kotlin #51, Swift #19) and the bridge methods in pix #64;
 2. **both** kits gain `inbox` + `send` alongside the existing ORM — Kotlin **designs** first and
-   Swift ports the proven shape, but pix does not switch until both have landed;
-3. pix switches to the new API;
-4. the old surface is deleted, per kit.
+   Swift ports the proven shape, but pix does not switch until both have landed — **DONE
+   2026-07-28**: inbox (Kotlin #49, Swift #18), `send` (Kotlin #52, Swift #20);
+3. pix switches to the new API — **DONE 2026-07-28** (pix #64, #65). Every ORM call site is gone
+   from pix's production code;
+4. the old surface is deleted, per kit — **NOT STARTED.** This is `RESET.md`.
 
 Pin kit commits in pix CI for the duration, so step 4 cannot strand an older pix commit.
+**Done and currently active**, pinned at `503ce22` (pix #63, bumped in #64). **Remove the pin after
+step 4 lands**, restoring the float — the comment block at the pin says so at the line that has to
+change.
+
+> **What steps 1–3 actually cost, recorded because the estimate was wrong in both directions.**
+>
+> The *store* was much smaller than this document predicted — §8.1's correction was right, the table
+> already existed and `EntryStore` is ~100 lines per kit. What was NOT predicted: `send` had to be
+> built too (§5 existed as a design but not as code), the audience resolver had to move with it, and
+> an adversarial review of the inbox found **five data-loss defects** in freshly-merged code —
+> including an ORM call left inside the ack gate that made a malformed payload wedge the receiver
+> permanently, and an unvalidated `Envelope.id` that collapsed every short id onto one dedupe key.
+>
+> The lesson for step 4 is not "go slower"; it is that **the dangerous defects were all in the
+> ordering of effects, not in the deletions**. Step 4 is mostly subtraction, which is the safer half.
+
+> **The `routing.json` handover is COMPLETE (2026-07-28).** `RESET.md` requires pix to vendor the
+> five leak guards and have them passing *before* the vectors are deleted here. They are transcribed
+> verbatim in `obscura-pix/src/domain/__tests__/audience.guards.test.ts`, against
+> `src/domain/audience.ts`. The precondition on deleting `conformance/routing.json` is met.
 
 > **Status of that mitigation (checked 2026-07-25): NOT done, and two things about pix CI change how
 > much this plan can lean on it.**
