@@ -16,8 +16,20 @@ This file answers *in what order*, and *how we know each step worked*.
 | 0 — make the truth observable | **Done, both kits.** Kotlin's diagnostics landed first; Swift's libsignal-level `AddressingProbe` reached `main` with the Phase 2 merge | Kotlin `main` (`02c7dd7`); Swift `main` (`a002a62`) |
 | 1 — stop the data loss | **Done, both kits — with one accepted exception.** Swift's persist-failure residual is merged and verified; **MODEL_SYNC is still acked before persistence** (see the Phase 1 status block — deferred to Phase 3 by decision) | Kotlin `main` (`c196d15`); Swift `main` (`eeb8bee`, via PR #6) |
 | 2 — one identifier, everywhere | **DONE — acceptance signed off 2026-07-25**, proven by tests on both kits against a real server. Four known gaps recorded at sign-off | proto `main` (`ef3e51c`, PR #5); server `main` (`0b0fe38`, PR #155, v0.9.4); Kotlin `main` (PRs #40, #42); Swift (PRs #6, #8, #9) |
-| 3 — the reset (`RESET.md`) | **Not started.** The ORM, CRDT engine, query DSL, schema parser and routing engine are all still present in both kits; `conformance/{routing,merge,schema}.json` still shipped | — |
+| 3 — the reset (`RESET.md`) | **In progress. Steps 1–3 of the migration order are DONE (2026-07-28); step 4 — the deletion itself — has not started.** Both kits have `inbox`, `send` and `EntryStore`; pix has switched and no longer calls the ORM anywhere in production code. The ORM, CRDT engine, query DSL, schema parser and routing engine are all still present in both kits, now unused by the app and running as a dual-write fallback | Kotlin `main` (#49–#52); Swift `main` (#18–#20); pix `main` (#63–#65) |
 | 4 — push + NSE | **Not started** | — |
+
+> **Where Phase 3 actually is (2026-07-28).** The migration order in `KIT_API.md` §10 puts the
+> deletion LAST, so "Phase 3 started" and "code has been deleted" are different things. Steps 1–3
+> built the replacement alongside the ORM and moved pix onto it; **nothing has been deleted yet**,
+> and the ORM is still receiving a parallel write on every MODEL_SYNC. That duplication is
+> deliberate and ends with step 4. Two consequences worth holding onto:
+>
+> - **The fallback is still live.** Until step 4, a defect in the new path is recoverable by reading
+>   the ORM's copy. After it, it is not.
+> - **The audience resolver now lives in the app**, and it is the highest-risk piece of the phase —
+>   `obscura-pix/src/domain/audience.ts`, guarded by the five `routing.json` leak vectors vendored
+>   there.
 
 **Phase 3 is now unblocked.** Both kits address Signal sessions by device UUID, both
 read `Envelope.sender_device_id`, and both prove it with tests that run against a real
