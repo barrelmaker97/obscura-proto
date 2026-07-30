@@ -25,8 +25,18 @@ This file answers *in what order*, and *how we know each step worked*.
 > and the ORM is still receiving a parallel write on every MODEL_SYNC. That duplication is
 > deliberate and ends with step 4. Two consequences worth holding onto:
 >
-> - **The fallback is still live.** Until step 4, a defect in the new path is recoverable by reading
->   the ORM's copy. After it, it is not.
+> - ~~**The fallback is still live.**~~ **WRONG, and corrected 2026-07-30.** A deletion-readiness
+>   review found the dual write was not a fallback but a corruption: the ORM's parallel write passed
+>   `sync.authorDeviceId` — wire field 7, **peer-asserted**, the field `KIT_API.md` §8.2 names as
+>   contradicting SPEC §0.10 — and an unclamped timestamp. The app read that row as existing state,
+>   and APPEND's first-write-wins meant the row carrying the AUTHENTICATED `senderDeviceId` lost. So
+>   every inbound `directMessage` and `story` the app kept had a peer-chosen `author_device_id`, and
+>   a peer choosing a high string wins every future REPLACE tie-break for that entry.
+>
+>   **The side-by-side state was less safe than either end state.** The parallel write is now removed
+>   (Kotlin #55); the ORM is inert on the receive path and deleting it is a simplification, not a
+>   loss of cover. Worth remembering as a general point: "keep the old path around for safety" is an
+>   assumption, not a property, and it was false here.
 > - **The audience resolver now lives in the app**, and it is the highest-risk piece of the phase —
 >   `obscura-pix/src/domain/audience.ts`, guarded by the five `routing.json` leak vectors vendored
 >   there.

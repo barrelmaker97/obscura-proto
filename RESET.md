@@ -52,7 +52,25 @@ no relationships, and no reactive observation of entries.
 | Reactive observation of entries (`model.observe()`, filtered observation) | No `observeEntries` on the bridge. The app re-fetches `allEntries` on a `messageReceived`/`entriesChanged` event (`store.ts:205-214`). The Flow/ValueObservation layer is unreachable. |
 | Schema engine — `ModelConfig`, `FieldTypes`, `fromWire`, field validation | `SPEC §0.4`: a kit does not act on application fields, so it does not parse an application schema. The schema stays in `schema.ts`. |
 | Audience / routing engine — `Audience`, `SyncManager` targeting | `SPEC §0.4`: the caller names recipients. Resolution moves to TS, where it exists once. |
-| `TTLManager` | `story` declares `ttl: '24h'` in `schema.ts` and **nothing in `src/` ever references TTL or expiry**. Becomes an `expiresAt` field the app filters on. |
+| `TTLManager` | `story` declares `ttl: '24h'` in `schema.ts` and **nothing in `src/` ever references TTL or expiry**. Becomes an `expiresAt` field the app filters on. **See the correction below — this is weaker than it reads.** |
+
+> **Correction (2026-07-30): stories already never expire, and the receive path never expired them
+> at all.** Deleting `TTLManager` removes nothing that works, but the row above implies a working
+> feature is being traded for one to be rebuilt. It is not. Three findings from the readiness review:
+>
+> 1. TTL was only ever scheduled in `Model.create` — the **authoring** device. The receive path
+>    (`GSet.merge` → `ModelStore.put`) hard-codes `ttl_expires_at = null`, so **a received story never
+>    carried an expiry on Kotlin, ever.**
+> 2. Since pix switched (§10 step 3), reads go through `EntryStore.all`, which does not filter on
+>    expiry, and writes go through `EntryStore.put`, which writes `ttl_expires_at = null` via
+>    `INSERT OR REPLACE` — so it also clears any TTL a pre-switch row happened to carry.
+> 3. obscura-pix has zero references to expiry outside the schema literal; `StoriesScreen` sorts by
+>    timestamp and never filters by age.
+>
+> So: **stories currently never expire, on either platform, for author or recipient.** Track
+> `expiresAt` + a filter in `loadEntries` as a FEATURE TO BUILD, not a regression to avoid. Related:
+> attachment blobs expire server-side at 30 days (`KIT_API.md` §5), so old stories will accumulate as
+> broken media until this is built.
 | Typed models (`TypedModel.wrap<T>`) | A Kotlin-only API. The app defines models as JSON through `defineModels`; it cannot reach this. |
 | Legacy TEXT / IMAGE message path | Not on the bridge. The app never calls `send()`. |
 | `sendText()` | Added by me this session to keep transport tests green. Exactly the "legacy breadcrumb" this reset exists to remove. Migrate those tests to the real send path. **(Verified gone from Kotlin `main` 2026-07-24.)** |
@@ -181,6 +199,23 @@ probably better modelled as an explicit receipt message.
 Roughly 70% of each kit, and the part whose tests pass:
 
 - Signal protocol: sessions, identity, prekeys, encrypt/decrypt (`crypto/`, 2,944 lines in Kotlin)
+
+> **Correction (2026-07-30): `MonotonicClock` is on this Keep list and should not be.** A
+> deletion-readiness review found it has **zero non-ORM callers in either kit** — Kotlin `Model.kt`
+> and `LWWMap.kt`, Swift `Model.swift` and `LWWMap.swift`, all of which are deletions. Entry
+> timestamps are now stamped app-side (`obscura-pix/src/state/writeEntry.ts`, `nextSentAt`) and by
+> `send(sentAt:)`'s default, and `nextSentAt` already provides the strictly-increasing property the
+> clock existed for. Keeping it would preserve dead code inside a phase whose point is removing dead
+> code. **Delete it with the ORM.**
+>
+> **`WireCodec` genuinely is a pure move** in both kits (Kotlin's `ModelOp` lives in the same file),
+> with live non-ORM callers in `ObscuraClient` and `MessagingManager`.
+>
+> **`ModelSignal.swift` is NOT a pure move, and "relocate" under-describes it.** `extension
+> TypedModel` and `extension Model` in that file reference ORM types, so it must be **split**: keep
+> `SignalType`, `ModelSignalPayload`, `SignalStore`, `SignalObservation`, `SignalThrottle`,
+> `SignalStoreRegistry`; delete the two extensions with the ORM. Kotlin's `SignalManager.kt` *is* a
+> pure move (it imports only coroutines).
 - Device provisioning, linking, approval, revocation, takeover
 - Transport: REST + gateway WebSocket, envelope ack, offline send queue (`network/`, 700 lines)
 - Friend graph (needed to address devices *and* to resolve sender names — `SPEC §0.5`)
@@ -189,6 +224,10 @@ Roughly 70% of each kit, and the part whose tests pass:
   attachment cache are not. pix's attachments ride inside a `model_sync` entry, so deleting the arm
   does not touch a single line the app depends on. Do not conflate the two.
 - The message store and the push-wake path
+  > **Contradiction, flagged 2026-07-30:** the Delete list below has "`conversations` StateFlow,
+  > `messagesDomain`", which is that store. Resolution: **`MessageDomain` goes.** obscura-pix reads
+  > neither, and `SyncBlob`'s `messages` slot ships empty (`KIT_API.md` §8.4). What this Keep entry
+  > is really protecting is the **push-wake path**, which does not depend on it.
 - **Recovery: the `device_recovery_announce` arm, `RecoveryManager`, `RecoveryKeys`, `BackupCrypto`,
   `SyncBlob`.** *(Added 2026-07-26.)* The receive half is **unimplemented in both kits** — the arm
   falls through `routeMessage` and is acked — which reads like dead code and is not. The sender is
