@@ -87,10 +87,9 @@ looks locally.
   field like `conversationModel` is proof the boundary has already been crossed:
   the kit only needs to be told what an app's data *means* if it is doing
   something it should not be doing.
-- **MUST NOT post an OS notification whose content came from anywhere other than
-  declared proto fields plus copy the app registered.**
+- **MUST NOT post an OS notification.** Notification policy and copy belong to the app.
 
-**Two carve-outs, stated here because §0 wins every conflict and an unwritten exception is how a
+**One carve-out, stated here because §0 wins every conflict and an unwritten exception is how a
 rule quietly becomes fiction.**
 
 1. **Ephemeral signals.** A `MODEL_SIGNAL` carries its audience in `contextId`, and the kit resolves
@@ -98,14 +97,6 @@ rule quietly becomes fiction.**
    the canonical two-party id of §1.3, exactly two participants, and a value that is not MUST send
    **nothing** (§1.2). The kit reads no application field to do it. Both kits implement this, and
    §1.2 describes it.
-
-2. **`ProcessedCounts` — a KNOWN VIOLATION, not an exception.** Both kits match the literal model
-   names `"pix"` and `"directMessage"` in `classifyForPushCounts` to pick push-notification copy.
-   This breaks the rule above and is recorded here rather than left for a reader to discover as a
-   surprise. The fix is counts keyed on the opaque model name with the copy supplied by the app; it
-   changes a bridge-facing type on both platforms at once, which is why it has not been bundled with
-   anything else.
-
 
 ### 0.5 Sender identity
 
