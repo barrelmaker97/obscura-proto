@@ -1,6 +1,6 @@
 # Obscura client contract — SPEC
 
-**Spec version: 2**
+**Spec version: 3**
 
 The prose companion to the `.proto` files and the `conformance/` vectors. The
 protos pin the **shape** of the client-to-client contract; this document and
@@ -89,6 +89,23 @@ looks locally.
   something it should not be doing.
 - **MUST NOT post an OS notification whose content came from anywhere other than
   declared proto fields plus copy the app registered.**
+
+**Two carve-outs, stated here because §0 wins every conflict and an unwritten exception is how a
+rule quietly becomes fiction.**
+
+1. **Ephemeral signals.** A `MODEL_SIGNAL` carries its audience in `contextId`, and the kit resolves
+   it — this is the one audience a kit still derives. It is narrow by construction: the value MUST be
+   the canonical two-party id of §1.3, exactly two participants, and a value that is not MUST send
+   **nothing** (§1.2). The kit reads no application field to do it. Both kits implement this, and
+   §1.2 describes it.
+
+2. **`ProcessedCounts` — a KNOWN VIOLATION, not an exception.** Both kits match the literal model
+   names `"pix"` and `"directMessage"` in `classifyForPushCounts` to pick push-notification copy.
+   This breaks the rule above and is recorded here rather than left for a reader to discover as a
+   surprise. The fix is counts keyed on the opaque model name with the copy supplied by the app; it
+   changes a bridge-facing type on both platforms at once, which is why it has not been bundled with
+   anything else.
+
 
 ### 0.5 Sender identity
 
@@ -186,7 +203,7 @@ of that session's chain key, which only the sending device holds.
 3. A kit MUST select a peer's prekey bundle by device UUID, with **no fallback**
    to an arbitrary bundle. Encrypting once under one device's keys and fanning that
    ciphertext to every device of the user is the defect this rule exists to prevent
-   (`PLAN.md` F1): exactly one device can read it and the rest fail silently.
+   (`HISTORY.md` F1): exactly one device can read it and the rest fail silently.
 4. `authorDeviceId` MUST be derived from the **address of the session that
    decrypted** the message — never from a wire field. A malicious server that lies
    about `sender_device_id` can cause a decryption failure, but can never forge an
@@ -237,11 +254,14 @@ and instructed a kit to resolve it. §0.4 forbids exactly that: a kit does not
 read application configuration. The app decides who a write is for and passes a
 recipient list.
 
-One invariant from it survives and has moved to §5 (`send`), because it is a
-property of the send path rather than of an audience: **the author's own other
-devices are always included**, whatever the caller asks for, and the *sending*
-device is always excluded. A caller cannot opt out of self-sync and cannot
-accidentally encrypt to itself.
+One invariant from it survives, and it belongs to the **send path** rather than to any audience:
+on an *entry* send, **the author's own other devices are always included** whatever the caller asks
+for, and the *sending* device is always excluded — a caller cannot opt out of self-sync and cannot
+accidentally encrypt to itself. Both kits implement it; `KIT_API.md` §5 describes it.
+
+The invariant does **not** hold for ephemeral signals, which deliberately exclude own devices
+entirely: a typing indicator is about a conversation, not about your account. That is not an
+inconsistency to fix.
 
 ### 1.2 Fail-loud rule (confidentiality)
 
@@ -265,6 +285,14 @@ Two implementations, and both are load-bearing:
   this rule too, and both kits implement it as `send nothing` rather than an
   error, because dropping a typing indicator costs nothing while guessing its
   audience leaks the conversation.
+
+**The resolved audience MUST be intersected with the local accepted-friend graph, and MUST contain
+the resolving user.** `conversationId` is a payload field a peer controls, so without the
+intersection a stranger's entry can make this device address a userId of the attacker's choosing;
+without the self-membership check, an id naming two *other* people resolves to both of them and a
+1:1 write fans out to a pair the user is not in a conversation with. Neither guard was in the
+deleted `routing.json` — the first is why `obscura-pix`'s guard suite calls its extra case "the
+guard `routing.json` never had".
 
 > A three-party test is required to see a violation. Two-party tests cannot
 > distinguish "sent to the conversation" from "sent to everyone", which is why a
@@ -303,8 +331,10 @@ so cross-platform error handling can match on it.
 > around them — the query layer, observation, the tombstone ordering of §2.3 —
 > which served concurrent multi-writer editing the app does not do.
 >
-> **§2.3 is DELETED.** `deleteEntry` had no caller in the app, both kits now hard
-> delete, and a tombstone ordering nothing produced was dead on arrival.
+> **§2.3 is DELETED** — the tombstone *ordering* rules, which served concurrent multi-writer
+> editing the app does not do. What a DELETE means is specified below rather than left silent,
+> because `OP_DELETE` is still on the wire (`client.proto`), still exercised by `wire.json`'s
+> round-trip case, and still synthesised app-side.
 >
 > §2.4 (the future-timestamp clamp) **survives unchanged** and keeps its number:
 > both kits and pix cite "SPEC §2.4" by name.
@@ -312,7 +342,7 @@ so cross-platform error handling can match on it.
 > `conformance/merge.json` was deleted 2026-07-31. It lives on as
 > `obscura-pix/src/domain/__fixtures__/merge.json`, executed by
 > `src/domain/__tests__/merge.vectors.test.ts` — pix vendored its own copy first,
-> which `RESET.md` made a precondition of the deletion.
+> which `HISTORY.md` made a precondition of the deletion.
 
 *Vectors: none — `merge.json` was deleted 2026-07-31.*
 
@@ -321,6 +351,20 @@ reconcile. Merge MUST be **convergent**: applying the same set of writes in any
 arrival order yields the identical resolved state. This is why the vectors
 replayed each case in multiple `applyOrders`, and why the tie-break in §2.2 is
 mandatory rather than cosmetic.
+
+### 2.0 `OP_DELETE`
+
+A DELETE is an ordinary write carrying the delete intent; it does **not** get privileged ordering.
+It therefore resolves under the receiving entry's own rule:
+
+- Under `REPLACE`, a DELETE with a higher `(sentAt, authorDeviceId)` wins and the entry is gone.
+- Under `APPEND`, **a DELETE for an `id` that already exists is a no-op** — first write wins, and the
+  DELETE is not the first write. This is a direct consequence of §2.1 and is stated because it is
+  surprising: the app's `directMessage` and `story` are both `APPEND`, so a delete of either is
+  silently dropped. Nothing in the app sends one.
+
+No tombstone is retained. A kit hard-deletes or soft-deletes as it prefers — the two are
+indistinguishable through the bridge, since both make the entry stop appearing in `all`.
 
 ### 2.1 `APPEND` (first write wins) — formerly GSet
 
@@ -358,13 +402,19 @@ testing — hence it is pinned by a multi-order vector, now
 
 An incoming `timestamp` more than **60s** beyond local wall-clock is clamped to
 `now + 60s` before it participates in §2.2, so a spoofed far-future timestamp
-cannot win every future conflict forever. The clamp applies on **both** the
-local-write and the incoming-sync (merge) paths — a timestamp arriving over sync
-is no more trustworthy than a local one.
+cannot win every future conflict forever.
 
-*Not vector-tested:* the clamp is relative to wall-clock `now`, which a static
-fixture cannot express deterministically, so it is verified by per-kit unit
-tests instead (e.g. Kotlin `LWWMapTest`).
+The clamp is normative on the **incoming** path, and both kits apply it there
+(`clampFutureTimestamp`, called from the inbox write). On the **local-write** path it is advisory:
+`obscura-pix`'s `nextSentAt` returns `max(now, existing.sentAt + 1)` to keep local writes strictly
+increasing, which can exceed `now + 60s` by a millisecond after a peer row was itself clamped to the
+ceiling. That is deliberate and self-correcting — the receiver re-clamps — and it is recorded here
+because the previous wording claimed both paths were clamped when one never was.
+
+*Not vector-tested:* the clamp is relative to wall-clock `now`, which a static fixture cannot
+express deterministically, so it is verified per kit instead. Kotlin: `InboxTests` (the clamp tests
+used to live in `LWWMapTest`, which was deleted with the CRDT engine — that name is cited in older
+comments and no longer exists).
 
 ## 3. Wire (encoding)
 
@@ -372,7 +422,7 @@ tests instead (e.g. Kotlin `LWWMapTest`).
 
 The client content is a `ClientMessage` (`obscura/client/v1/client.proto`). This
 section pins two things about it: the **wire ↔ app-facing-form mappings** (the message
-kind and the two remaining enums) and **round-trip preservation** of a
+kind and the two content enums (`EncryptedMessage.Type` is transport, not content)) and **round-trip preservation** of a
 `ModelSync`.
 
 ### 3.1 Message kind and enum mappings
@@ -448,8 +498,8 @@ first.** (Historically `ModelSync` carried a `signature` field — a keyless
   alongside `Envelope.sender_device_id`. §§1, 2.1–2.3 and 4 marked SUPERSEDED,
   pending removal in Phase 3. Not vector-backed: §0 is a boundary rule reviewable by
   reading a kit's field accesses; §0.9 and §0.10 are receive-loop behavior, verified
-  by per-kit integration tests (`AckSemanticsTests`, `AuthorDeviceIdTests`,
-  `TwoDeviceSendTests`).
+  by per-kit integration tests (Kotlin `AckSemanticsTests`; both kits' `AuthorDeviceIdTests`
+  and `TwoDeviceSendTests` — Swift has no ack-semantics suite).
 - **v1** — Initial spec. §1 Routing (audience modes, fail-loud rule, canonical
   `conversationId`, `DIRECT_ROUTING_UNRESOLVED`), backed by `routing.json`.
   §2 Merge (GSet union, LWW total order with `authorDeviceId` tie-break,

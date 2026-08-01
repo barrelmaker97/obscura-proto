@@ -26,11 +26,6 @@ SPEC = CONFORMANCE_DIR.parent / "SPEC.md"
 # class is a deliberate act: register its file + a checker here (fail-loud).
 KNOWN_FILES = {"wire"}
 
-FIELD_TYPES = {"string", "number", "boolean", "timestamp"}
-APPLY_ORDERS = {"forward", "reverse"}
-ROUTING_ERRORS = {"DIRECT_ROUTING_UNRESOLVED"}
-SCHEMA_ERRORS = {"INVALID_SCHEMA"}
-
 
 class Report:
     """Accumulates violations with a file/context path prefix."""
