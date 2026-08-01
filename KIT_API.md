@@ -171,8 +171,8 @@ requires exactly this rather than losing the message.
 **Today that redelivery is harmless, and the reason is the engine being deleted.** `ModelStore.put`
 is `INSERT OR REPLACE` on `(model_name, entry_id)`, so a re-delivered entry overwrites itself and
 nothing is duplicated. Take the ORM away and put a monotonic `id` in front of it, and the same
-redelivery inserts a **second row**: `inboxDepth()` inflates, `processPendingMessages` counts
-inflate, and the app posts a duplicate notification for a message the user already has.
+redelivery inserts a **second row**: `inboxDepth()` inflates and the app sees a duplicate entry for
+a message it already has.
 
 Idempotence must therefore be re-established explicitly, at the inbox, where it now lives. One
 column and one clause. `Envelope.id` is server-assigned and already the ack key, so it is exactly the
@@ -437,7 +437,7 @@ expiry, so an unconsumed row can outlive its own media.
 | **Send** | `send(...)` (§5) |
 | **Attachments** | `uploadAttachment`, `downloadAttachment` (§5) |
 | **Signals** | typing / read indicators — droppable (§4), **not** inbox rows |
-| **Push** | `processPendingMessages(timeout)` → counts by **opaque** model key; `registerNotificationTemplates` (§7) |
+| **Push** | `registerPushToken`; `processPendingMessages(timeout)` → one opaque total of processed envelopes |
 | **Events** | `inboxChanged`, `connectionChanged`, `authStateChanged`, `authFailed`, `friendsUpdated`, `pushTokenReceived`, `appStateChanged`, `launchedFrom` |
 
 > **This list is still not exhaustive, and that is a known risk.** pix's bridge exposes ~44 methods
@@ -447,11 +447,12 @@ expiry, so an unconsumed row can outlive its own media.
 > `friendsUpdated` is the sharpest example — with only `inboxChanged`, an inbound friend request is
 > invisible until something polls.
 
-`processPendingMessages` returns zero counts when it genuinely cannot connect (`HISTORY.md` F10);
-making that distinguishable is a Phase 4 decision and this API is where it lands. Counts MUST be of
-rows **persisted during that call** — not depth, not rows the app already consumed — and whoever
-composes the notification MUST read the store, not a channel. (Today a channel race means an FCM
-wake can steal a message from the app and post no notification at all.)
+`processPendingMessages` returns zero when it genuinely cannot connect (`HISTORY.md` F10); making
+that distinguishable remains a later API decision. A successful return is the total of envelopes
+whose routing and required persistence completed during that call, including harmless
+redeliveries. It is deliberately not grouped by model and MUST NOT determine model-specific
+notification policy or copy. The drain observes receive-path activity; it never consumes the
+app's `incomingMessages` stream or Swift's test queue.
 
 ---
 

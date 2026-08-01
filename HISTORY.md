@@ -71,6 +71,13 @@ effects**, not in the deletions — a write acked before it was durable, an ORM 
 gate that wedged the receiver permanently, an unvalidated `Envelope.id` collapsing every short id
 onto one dedupe key, an audience taken from peer-supplied payload. Subtraction was the safe half.
 
+## Follow-ups closed after the reset
+
+- **2026-08-01 — push counts stopped naming application models.** `ProcessedCounts` and
+  `classifyForPushCounts` were deleted from both kits. `processPendingMessages` now returns one
+  opaque total of processed envelopes and observes receive-path activity without consuming
+  the app/test event queue. Notification classification remains in the app.
+
 ## Known gaps carried forward
 
 These were open when the planning documents were retired, and are not recorded anywhere else:
@@ -84,8 +91,6 @@ These were open when the planning documents were retired, and are not recorded a
   acked loudly — rather than an unknown one inboxed as opaque bytes. Consequence: a second device
   does not learn about friends added later; `DEVICE_LINK_APPROVAL` still carries the friends export
   at link time. Rebuilding it properly needs a `user_id` field and a new number.
-- **`ProcessedCounts` hard-codes `"pix"` and `"directMessage"`** in kit source, which §0.4 forbids.
-  Both kits, identically. The fix changes a bridge-facing type on both platforms at once.
 - **Swift sends `DEVICE_LINK_APPROVAL` but cannot receive one**, so a newly-linked device discards
   the p2p keypair, recovery key, friends export and approver device list. Kotlin routes it.
 - **The six unimplemented payload arms** (`history_chunk`, `settings_sync`, `read_sync`,
