@@ -1,8 +1,11 @@
 # The thin kit API — proposal
 
-**Status: proposal, for review. Not normative until merged into [`SPEC.md`](SPEC.md).**
+**Status: NORMATIVE for the app-facing kit surface.** It began as a proposal and was never formally
+merged into [`SPEC.md`](SPEC.md), but every §10 step has shipped and both kits now cite its section
+numbers from source — §3.3's inbox rules, P1's migration requirement, §8.2, §9's no-query-API rule.
+Treat it as binding and keep it true. `SPEC.md` remains the authority where the two overlap.
 
-[`PLAN.md`](PLAN.md) Phase 3 calls this "the one genuinely hard-to-reverse decision in the plan".
+[`HISTORY.md`](HISTORY.md) Phase 3 calls this "the one genuinely hard-to-reverse decision in the plan".
 This document is that decision, written down before any code is deleted, so it can be argued with
 cheaply.
 
@@ -244,7 +247,7 @@ arm MUST be classified, because the classification is what makes §0.9 checkable
 | `session_reset` | Kit-internal | Session store. |
 | `sync_blob`, `sent_sync`, `history_chunk`, `sync_request` | Kit-internal | Own-device sync. |
 | `model_signal` | **Droppable** | Typing/read indicators. `client.proto` says "in-memory only". |
-| `text` | — | Legacy; deleted by `RESET.md`. |
+| `text` | — | Legacy; deleted by `HISTORY.md`. |
 | `settings_sync`, `read_sync` | **DELETE** | *Decided 2026-07-26.* Zero implementations anywhere — see §4.3. |
 | *arm absent from this table* | **Inboxed, unparsed** | *Decided 2026-07-26.* Not "decline to ack" — that is a remote wipe primitive. See §4.1. |
 
@@ -330,7 +333,7 @@ are dead on both sides. The other two are one-sided and neither costs anything t
 recovery UI, so `announceRecovery` throws before it can send. Nothing in the running app emits this.
 Recovery is a real subsystem — the server's backup side is fully built and E2E-encrypted (§8.4) — so
 deleting the arm is wrong; building a receive handler for a flag that is off, with no UI, is the
-speculative work Phase 3 is explicitly not doing (`PLAN.md`, "Explicitly NOT in Phase 3").
+speculative work Phase 3 is explicitly not doing (`HISTORY.md`, "Explicitly NOT in Phase 3").
 
 > **What must change now is the test, not the code.** `RecoveryMessagingTests` exists in **both** kits
 > and asserts only that the wire message *arrives*:
@@ -355,7 +358,7 @@ falls through, so it **accepts an unsigned device list when no key is stored yet
 (`ObscuraClient.swift`, `case .deviceAnnounce`).
 
 **Net effect on the wire.** With these four, plus `settings_sync` / `read_sync` (§4.3) and `text`
-(already a `RESET.md` deletion), `client.proto` goes from **18 payload arms to 11** — and the inbox's
+(already a `HISTORY.md` deletion), `client.proto` goes from **18 payload arms to 11** — and the inbox's
 classification table, which every kit must implement and keep in step, shrinks with it.
 
 ### 4.3 Arms with no implementation on either side
@@ -444,7 +447,7 @@ expiry, so an unconsumed row can outlive its own media.
 > `friendsUpdated` is the sharpest example — with only `inboxChanged`, an inbound friend request is
 > invisible until something polls.
 
-`processPendingMessages` returns zero counts when it genuinely cannot connect (`PLAN.md` F10);
+`processPendingMessages` returns zero counts when it genuinely cannot connect (`HISTORY.md` F10);
 making that distinguishable is a Phase 4 decision and this API is where it lands. Counts MUST be of
 rows **persisted during that call** — not depth, not rows the app already consumed — and whoever
 composes the notification MUST read the store, not a channel. (Today a channel race means an FCM
@@ -543,7 +546,7 @@ and expose three *storage* methods across the bridge** (`putEntry`, `allEntries`
 > caveat undersells the phase** *(corrected 2026-07-25)*. `createEntry` is not a store call:
 > `Model.kt:66` ends in `syncManager?.broadcast(this, entry)`, so it is the app's **entire outbound
 > path**, and pix has no `send` of its own today. After the reset pix must resolve the audience for
-> four models, honour `SPEC §1.2`'s fail-loud rule (see `RESET.md`, "The `routing.json` leak
+> four models, honour `SPEC §1.2`'s fail-loud rule (see `HISTORY.md`, "The `routing.json` leak
 > guards"), call the kit's `send`, **and** write its own local row — the last of which §5 notes but
 > the "three methods" framing hides. The scope guard is still *three storage methods and no fourth*;
 > it was never a claim that the whole phase is three methods. `timestamp` and
@@ -611,12 +614,12 @@ vector and `obscura-pix` is right to read it from its `proto/` submodule (which 
 PR #56). Once Phase 3 deletes the kits' merge engine there is exactly **one** implementation left,
 and a vector with one implementation is not a contract — it is pix's test fixture, and it should move
 into pix. **pix must be reading a local copy before this file is deleted**, or the deletion breaks
-pix's only test suite on the day it lands. Sequenced in `RESET.md`, "The `merge.json` handover".
+pix's only test suite on the day it lands. Sequenced in `HISTORY.md`, "The `merge.json` handover".
 
 **`conformance/merge.json` ports partially, not wholly.** Of its six cases, three survive as
 APPEND/REPLACE (GSet union, GSet idempotence, LWW higher-timestamp) and one survives *only because*
 of the tie-break decision above. The two tombstone cases (`newer tombstone wins`, `stale write does
-not resurrect`) pin deletes, which `RESET.md` removes — so they retire with the feature rather than
+not resurrect`) pin deletes, which `HISTORY.md` removes — so they retire with the feature rather than
 "port". Say which are which when porting; do not claim the file moved.
 
 ### 8.3 Also pix's, now
@@ -646,7 +649,7 @@ built.
 
 > **CORRECTION (2026-07-25, same day).** This section first stated as fact that the backup "is
 > already end-to-end encrypted … the server holds ciphertext it cannot read." **That is true of
-> Kotlin only, and it is a live confidentiality defect on iOS.** Guardrail 4 in `RESET.md` — *a doc
+> Kotlin only, and it is a live confidentiality defect on iOS.** Guardrail 4 in `HISTORY.md` — *a doc
 > comment asserting a safety property must cite the test that proves it* — applies to this document
 > too, and this is what it looks like when it is not followed.
 
@@ -673,7 +676,7 @@ Two consequences beyond the confidentiality gap:
   Swift's missing `case .deviceLinkApproval`.
 - **The `messages` slot is the legacy TEXT shape, not model entries.** `SyncBlob.kt:33-45` writes
   `{messageId, conversationId, content, timestamp, type, authorDeviceId}` from `MessageData` — i.e.
-  from `MessageDomain`, **which `RESET.md` deletes**. So "the format already has room, filling it is
+  from `MessageDomain`, **which `HISTORY.md` deletes**. So "the format already has room, filling it is
   not new infrastructure" is wrong twice over: wrong shape, and its producer is on the deletion list.
   There is also no version field in the blob (`{friends, messages, timestamp}`), so changing the
   shape has no compatibility story.
@@ -762,7 +765,7 @@ covered by a test that a *migrated* database and a *freshly created* one end up 
 schemas — the double-entry between `.sq` and `.sqm` is exactly the mistake that produces the silent
 per-device kill above.
 
-`RESET.md`'s "greenfield — bump the schema and wipe" is only half true: `versionCode 1` and no store
+`HISTORY.md`'s "greenfield — bump the schema and wipe" is only half true: `versionCode 1` and no store
 release mean no public installs, but developer devices are precisely the population this kills, and
 the wipe mechanism it refers to was itself deleted.
 
@@ -777,7 +780,7 @@ decides where both live.**
 > **Third count added 2026-07-26, while implementing this.** The drafted version named only the
 > database and its key, which is necessary and not sufficient. **There is no REST message fetch** —
 > `POST /v1/messages` is send-only and delivery is exclusively the gateway WebSocket (see Phase 4's
-> note in `PLAN.md`). So an NSE must `POST /v1/gateway/ticket` before it can receive anything, and
+> note in `HISTORY.md`). So an NSE must `POST /v1/gateway/ticket` before it can receive anything, and
 > that needs the auth token, which pix keeps in `KeychainSession` under `kSecAttrService` with no
 > access group. An NSE that can open the database but cannot authenticate does nothing at all.
 >
@@ -864,9 +867,12 @@ local SPM). So "Kotlin ships first" would break iOS for the whole duration of th
 2. **both** kits gain `inbox` + `send` alongside the existing ORM — Kotlin **designs** first and
    Swift ports the proven shape, but pix does not switch until both have landed — **DONE
    2026-07-28**: inbox (Kotlin #49, Swift #18), `send` (Kotlin #52, Swift #20);
-3. pix switches to the new API — **DONE 2026-07-28** (pix #64, #65). Every ORM call site is gone
-   from pix's production code;
-4. the old surface is deleted, per kit — **DONE 2026-07-31**: Kotlin #56, Swift #24. `RESET.md`
+3. pix switches to the new API — **DONE 2026-07-30** (pix #64, #65, and finally **#67**, whose
+   commit is titled "pix stops touching the ORM entirely — the real §10 step 3"). The earlier
+   claim here credited #64/#65 and dated this 07-28; that was wrong by two days and by one PR,
+   because a `defineModels` call site was still live at `store.ts:341` — synchronous, so it was
+   invisible to `tsc` and to jest;
+4. the old surface is deleted, per kit — **DONE 2026-07-31**: Kotlin #56, Swift #24. `HISTORY.md`
    is the inventory. Both kits then dropped the ORM's *storage* as well (Kotlin #57, Swift #24's
    `ObscuraSchema` v2), which is a separate step because deleting a table needs a migration.
 
@@ -895,7 +901,7 @@ re-arms the cross-repo toolchain-drift check the pin had been suppressing.
 > The lesson for step 4 is not "go slower"; it is that **the dangerous defects were all in the
 > ordering of effects, not in the deletions**. Step 4 is mostly subtraction, which is the safer half.
 
-> **The `routing.json` handover is COMPLETE (2026-07-28).** `RESET.md` requires pix to vendor the
+> **The `routing.json` handover is COMPLETE (2026-07-28).** `HISTORY.md` requires pix to vendor the
 > five leak guards and have them passing *before* the vectors are deleted here. They are transcribed
 > verbatim in `obscura-pix/src/domain/__tests__/audience.guards.test.ts`, against
 > `src/domain/audience.ts`. The precondition on deleting `conformance/routing.json` is met — and the
@@ -904,27 +910,18 @@ re-arms the cross-repo toolchain-drift check the pin had been suppressing.
 > conformance suite is the right tool for logic you are *forced* to duplicate, and a warning sign
 > for logic you merely *chose* to duplicate. Encoding is the only thing two kits must implement twice.
 
-> **Status of that mitigation (checked 2026-07-25): NOT done, and two things about pix CI change how
-> much this plan can lean on it.**
+> **The mitigation ran and is now retired.** The kit checkout was pinned for steps 2–4 (pix #63,
+> bumped in #64) and unpinned after step 4 landed (pix #68), restoring the float that couples pix's
+> green to the kit's `main` and catches cross-repo toolchain drift.
 >
-> - **The kit checkout floats.** `.github/workflows/ci.yml`'s `android` job checks out
->   `rhelsing/ObscuraKit-Kotlin` with **no `ref:`**. That float is *deliberate* — the job's own
->   comment explains it couples pix's green to the kit's `main` and catches cross-repo toolchain
->   drift — so it should not be pinned permanently. It must be pinned **for the duration of steps
->   2–4**, because those steps deliberately land a kit deletion before pix can switch. A reminder
->   now sits in the workflow at the line that has to change.
-> - **There is no iOS job at all** — the jobs are `typecheck`, `domain-tests`, `lint`, `android`. So
->   the entire argument for this ordering ("Kotlin ships first would break iOS for the whole
->   duration of the Swift port") is **invisible to CI**: nothing would go red if Swift and pix's one
->   shared TypeScript surface diverged. The ordering is sound; it is currently enforced by care
->   rather than by a check.
+> Two things this block used to say, corrected because both were used as arguments: pix's suite is
+> **103 tests across 9 files**, not "12 tests over an 80-line pure function"; and step 3 was not
+> "untestable by construction" — the in-memory kit double it called for exists as
+> `obscura-pix/src/native/__fixtures__/FakeObscuraBridge.ts`, installed by `jest.setup.ts`, and is
+> what `src/native/__tests__/bridge.test.ts` and the `src/state/` suites run against.
 >
-> **And step 1's "done" is thinner than it reads.** pix's suite is 12 tests over an 80-line pure
-> function, and `ObscuraModule.ts:11` proxies every native call to a noop under jest
-> (`new Proxy({}, { get: () => noop })`). Nothing that crosses the bridge is testable as configured,
-> which makes **step 3 ("pix switches to the new API") untestable by construction**. What that step
-> needs is an in-memory kit double, not more merge tests. Budget for it there rather than
-> discovering it mid-switch.
+> Still true: there is **no iOS job** in pix CI, so §10's ordering argument is invisible to it —
+> nothing would go red if the Swift kit and pix's shared TypeScript surface diverged.
 
 ---
 
@@ -940,9 +937,25 @@ re-arms the cross-repo toolchain-drift check the pin had been suppressing.
   other devices through the ordinary envelope path; the originating device writes to its own store.
 - ~~The five arms classified in §4 that neither kit implements.~~ **Answered (§4.2):** four are
   deleted (`sync_request`, `history_chunk`, `content_reference`, `chunked_content_reference`) and
-  `device_recovery_announce` keeps its arm with the handler deferred — it cannot fire, because
-  `enableRecoveryPhrase` defaults to `false` and pix has no recovery UI. `client.proto` goes from 18
-  arms to 11.
+  `device_recovery_announce` keeps its arm with the handler deferred.
+
+  > **NOT EXECUTED, and two of the six are not safe as described.** `client.proto` still declares
+  > all 18 arms; only `friend_sync` (51) has been removed, for unrelated reasons (`HISTORY.md`).
+  > Before reserving the rest:
+  >
+  > - **`content_reference` is RECEIVED and parsed.** `KIT_API` §4.3 classified it sender-only, but
+  >   Kotlin's `AttachmentTests`, `PixFlowTests` and `EdgeCaseTests` all read
+  >   `msg.raw!!.contentReference.attachmentId` off a received message and download from it.
+  >   Removing the arm reds four attachment scenarios.
+  > - **`text` is live on the receive path in both kits**, classified KIT_INTERNAL in both
+  >   `PayloadClass` files, and **pinned by `conformance/wire.json`** — deleting it reds both
+  >   conformance suites, and `validate.py` would not catch it because it never cross-checks
+  >   `wire.json` against `client.proto`.
+  >
+  > `history_chunk`, `settings_sync`, `read_sync`, `chunked_content_reference` and `sync_request`
+  > are genuinely receiver-less and safe. `enableRecoveryPhrase` exists **only in Kotlin** — the
+  > Swift kit has no such flag and its `announceRecovery` is ungated, so "it cannot fire" is true
+  > of one kit and false of the other.
 - **New, from §4.2:** `RecoveryMessagingTests` in **both** kits asserts only that the wire message
   arrives, so it passes with no handler — a delivery test named like a feature test. Rename and
   annotate; tracked as kit work, not proto work.

@@ -13,8 +13,7 @@ implementation matches. A behavior change means editing the vector — which
 forces every kit to prove it still conforms.
 
 > **Format:** strict JSON (no comments/trailing commas). JSON is used
-> deliberately: these are *test fixtures*, loaded by JUnit / XCTest / the web
-> test runner with zero code generation. The contract data they describe (e.g.
+> deliberately: these are *test fixtures*, loaded by JUnit and XCTest with zero code generation. The contract data they describe (e.g.
 > the model-config schema, the wire proto) lives in `.proto`; the fixtures
 > *about* that contract are JSON.
 
@@ -24,7 +23,7 @@ forces every kit to prove it still conforms.
 |---|---|---|---|
 | `wire.json`    | Wire ↔ app mappings + `ModelSync` round-trip | Kotlin + Swift | **active — the only one left** |
 
-> **`routing.json`, `merge.json` and `schema.json` were DELETED (2026-07-31, `RESET.md` §10 step
+> **`routing.json`, `merge.json` and `schema.json` were DELETED (2026-07-31, `HISTORY.md` §10 step
 > 4), and it is worth understanding why — because the mechanism is sound and the mistake was
 > upstream of it.**
 >
@@ -32,7 +31,7 @@ forces every kit to prove it still conforms.
 >
 > - `routing.json` — its five leak guards are transcribed verbatim into
 >   `obscura-pix/src/domain/__tests__/audience.guards.test.ts`, run against
->   `src/domain/audience.ts`. `RESET.md` made that transcription a precondition of this deletion.
+>   `src/domain/audience.ts`. `HISTORY.md` made that transcription a precondition of this deletion.
 > - `merge.json` — vendored to `obscura-pix/src/domain/__fixtures__/merge.json` and executed by
 >   `src/domain/__tests__/merge.vectors.test.ts` against `src/domain/merge.ts`. pix reads its OWN
 >   copy, deliberately: the handover had to be complete before the original could go.
@@ -81,8 +80,11 @@ Consumers: Kotlin `WireConformanceTest.kt`, Swift `WireConformanceTests.swift`.
 
 ## Adding a case
 
-Add an object to `cases[]`. No code change is needed in a conforming kit — the
-consumer generates one named test per case. If a kit goes red, either the kit
+**`wire.json` has no `cases[]`** — that shape belonged to the three vectors that retired, and
+`validate.py`'s `only_keys` check now REJECTS an unexpected top-level key, so adding one fails CI.
+Add to the relevant array instead: `messageTypes`, `modelSyncOps` or `signalKinds` for a mapping, or
+`roundTrip` for a preservation case (names there must be unique — that is enforced). Both kits
+generate one named test per entry, so no kit code change is needed. If a kit goes red, either the kit
 has a bug or the vector encodes a behavior the kit has not yet implemented
 (track the latter as an explicit workstream).
 

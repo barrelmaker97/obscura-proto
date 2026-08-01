@@ -45,6 +45,17 @@ message ClientMessage {
   reserved 1, 11, 12, 15, 16;
   reserved "type";
 
+  // 51 was `FriendSync friend_sync`, removed 2026-08-01. It could not work: the message carried
+  // no `user_id`, so both kits keyed the synced friend on the SENDER's id — which their own
+  // "is this from my device" guard had just proven was the local user. Every befriend on a
+  // multi-device account wrote the user into their own friends list, and from there into
+  // getAccepted() and every fan-out. obscura-pix never read it.
+  //
+  // Multi-device friend sync is still worth having. Rebuilding it needs a `user_id` field and a
+  // NEW field number — do not recycle 51, and do not restore this message as it was.
+  reserved 51;
+  reserved "friend_sync";
+
   uint64 timestamp = 2;
 
   oneof payload {
@@ -73,9 +84,8 @@ message ClientMessage {
     ChunkedContentReference chunked_content_reference = 46;
     SyncRequest sync_request = 47;
 
-    // ORM layer (Level 3)
+    // Application data
     ModelSync model_sync = 50;
-    FriendSync friend_sync = 51;
     ModelSignal model_signal = 52;
   }
 }
@@ -202,16 +212,6 @@ message SentSync {
   bytes content = 4;                // The message content
 }
 
-// Sync friend list changes to own devices.
-// Sent to all own devices when a friend is added or removed.
-message FriendSync {
-  string username = 1;              // Friend's username
-  string action = 2;                // "add" or "remove"
-  string status = 3;                // Friend status (pending, accepted)
-  repeated DeviceInfo devices = 4;  // Friend's devices (for fan-out)
-  uint64 timestamp = 5;             // When the change occurred
-}
-
 // =============================================================================
 // Attachments (E2E Encrypted)
 // =============================================================================
@@ -261,7 +261,8 @@ message ModelSync {
   string model = 1;                 // Model name: "story", "streak", "settings"
   string id = 2;                    // Entry ID: "story_1706389200_abc123"
   Op op = 3;                        // Operation type
-  uint64 timestamp = 4;             // Lamport timestamp for CRDT ordering
+  uint64 timestamp = 4;             // Wall-clock ms. Clamped on receipt (SPEC.md §2.4) and
+                                    // tie-broken by author_device_id (§2.2). NOT a Lamport clock.
   bytes data = 5;                   // JSON-encoded model data
   string author_device_id = 7;      // Which device created this entry
 
