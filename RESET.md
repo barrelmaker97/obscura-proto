@@ -90,8 +90,8 @@ no relationships, and no reactive observation of entries.
 |---|---|
 | `conformance/routing.json` + `SPEC §1` | **DO NOT simply delete — five cases HAND OVER. See "The routing.json leak guards" below.** The original reasoning — "a kit no longer resolves an audience, so it cannot misroute" — is a non-sequitur: the risk *moves* to pix, it does not evaporate. (The observation that these vectors pin a `recipient` audience for `pix` while `schema.ts` declares `conversation` still stands, and is why only five of ten cases carry.) |
 | `SPEC §2.1-2.3` (the CRDT prose) | See below: the app needs `APPEND` and `REPLACE`, not a CRDT. |
-| `conformance/merge.json` | **DO NOT simply delete — it MIGRATES. See "The merge.json handover" below.** |
-| `conformance/schema.json` + `SPEC §4` | Kits do not parse app schemas. Swift never adopted this vector, which is a fair signal of its value. |
+| `conformance/merge.json` | **DO NOT simply delete — it MIGRATES. See "The merge.json handover" below.** **Handover complete; vector DELETED 2026-07-31.** pix reads its own `src/domain/__fixtures__/merge.json`. |
+| `conformance/schema.json` + `SPEC §4` | Kits do not parse app schemas. Swift never adopted this vector, which is a fair signal of its value. **Vector DELETED 2026-07-31; `SPEC §4` still stands and can go whenever — nothing cites its subsections.** |
 | **Six `client.proto` payload arms** — `settings_sync` (41), `read_sync` (42), `history_chunk` (40), `sync_request` (47), `content_reference` (45), `chunked_content_reference` (46) | *Added 2026-07-26.* Decided in `KIT_API.md` §4.2/§4.3 from a sender/receiver sweep. `settings_sync`, `read_sync`, `history_chunk` and `chunked_content_reference` have **no implementation on either side, anywhere**. `sync_request` and `content_reference` are sent by both kits, received by neither, and called by nothing outside the kits. **`reserved` the field numbers** — do not recycle them. With `text` (below) this takes the wire from **18 arms to 11**. |
 
 **Keep:** `conformance/wire.json` + `SPEC §3` — load-bearing forever. Two kits must encode

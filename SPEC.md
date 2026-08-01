@@ -207,47 +207,73 @@ of that session's chain key, which only the sending device holds.
 
 ## 1. Routing (delivery targeting)
 
-> **SUPERSEDED by §0.4 — pending removal.** Recipient resolution moves to the
-> app; a kit no longer resolves an audience, so it cannot misroute. The rules
-> below describe the engine being deleted, and `conformance/routing.json`
-> retires with it. Retained only until the kits stop implementing them.
+> **REWRITTEN 2026-07-31 — this is now an APP obligation, not a kit one.**
+> Recipient resolution moved to the app (§0.4; kits Kotlin #56, Swift #24), so a
+> kit no longer resolves an audience and cannot misroute. `conformance/routing.json`
+> was deleted with it; its five leak guards live in
+> `obscura-pix/src/domain/__tests__/audience.guards.test.ts`.
+>
+> The section survives because **the rules did not stop being true when they
+> changed owner.** §1.2 and §1.3 are implemented today by
+> `obscura-pix/src/domain/audience.ts` *and* by both kits' ephemeral-signal path,
+> which refuses a `contextId` that does not name exactly two participants. What
+> was deleted is §1.1's schema-driven audience table — the part that told a kit to
+> read application config, which §0.4 now forbids outright.
+>
+> §1.2, §1.3 and §1.4 **keep their numbers**; both kits cite them. The gap where
+> §1.1 was is deliberate — renumbering would silently redirect a live citation.
 
-*Vectors: [`conformance/routing.json`](conformance/routing.json).*
+*Vectors: none — `routing.json` was deleted 2026-07-31.*
 
-Every model declares an **audience** in its schema config that determines which
-recipients a write is delivered to. A kit MUST resolve the audience using only
-the declared configuration — it MUST NOT hard-code application field names.
+**The caller names the recipients** (§0.4). This section specifies what the
+caller MUST get right, and it binds whoever resolves the audience — today the
+app, for entries, and the kit itself only for the ephemeral-signal `contextId`,
+which is the one audience a kit still derives.
 
-### 1.1 Audience modes
+### 1.1 Audience modes — DELETED
 
-| `audience` | Meaning | Recipients |
-|---|---|---|
-| omitted / `{"kind":"friends"}` | Broadcast | The author's own devices + every accepted friend's devices. |
-| `{"kind":"self"}` | Private | The author's own devices only. MUST never leave the account. |
-| `{"kind":"recipient","field":"<f>"}` | 1:1 by username | Own devices + the devices of the single username in `data[f]`. |
-| `{"kind":"conversation","field":"<f>"}` | 1:1 by conversation | Own devices + the devices of both participants encoded in `data[f]`. |
+The table here mapped a model's declared `audience` config to a recipient set,
+and instructed a kit to resolve it. §0.4 forbids exactly that: a kit does not
+read application configuration. The app decides who a write is for and passes a
+recipient list.
 
-The author's own devices are **always** included, regardless of audience
-(self-sync). `selfUserId` therefore always appears in a vector's
-`expect.recipients`.
+One invariant from it survives and has moved to §5 (`send`), because it is a
+property of the send path rather than of an audience: **the author's own other
+devices are always included**, whatever the caller asks for, and the *sending*
+device is always excluded. A caller cannot opt out of self-sync and cannot
+accidentally encrypt to itself.
 
 ### 1.2 Fail-loud rule (confidentiality)
 
-A misrouted 1:1 payload is a confidentiality breach. Therefore, for the
-`recipient` and `conversation` audiences, if the recipient cannot be resolved
-the kit MUST raise `DIRECT_ROUTING_UNRESOLVED` and send **nothing**. It MUST
-NOT fall back to a broadcast. Specifically:
+A misrouted 1:1 payload is a confidentiality breach. Therefore, whoever resolves
+a 1:1 audience MUST raise `DIRECT_ROUTING_UNRESOLVED` and send **nothing** when
+it cannot be resolved. It MUST NOT fall back to a broadcast. Specifically:
 
-- `recipient`: the named field is **missing or blank** → raise. (A field that
-  is present and non-blank but names a non-friend is *not* an error: it resolves
-  to zero external recipients, so the write reaches own devices only — fail-safe,
-  never a broadcast.)
-- `conversation`: the named field does not resolve to **exactly two**
-  participants (missing, blank, or not a canonical two-party value) → raise.
+- **by recipient**: the naming field is **missing or blank** → raise. (A field
+  that is present and non-blank but names a non-friend is *not* an error: it
+  resolves to zero external recipients, so the write reaches own devices only —
+  fail-safe, never a broadcast.)
+- **by conversation**: the value does not resolve to **exactly two** participants
+  (missing, blank, or not a canonical two-party value per §1.3) → raise.
+
+Two implementations, and both are load-bearing:
+
+- **The app, for entries.** `obscura-pix/src/domain/audience.ts`, pinned by the
+  five leak guards transcribed from the deleted `routing.json`.
+- **The kit, for ephemeral signals.** A `MODEL_SIGNAL`'s audience comes from its
+  `contextId`, which is the one audience a kit still derives — so the kit owes
+  this rule too, and both kits implement it as `send nothing` rather than an
+  error, because dropping a typing indicator costs nothing while guessing its
+  audience leaks the conversation.
+
+> A three-party test is required to see a violation. Two-party tests cannot
+> distinguish "sent to the conversation" from "sent to everyone", which is why a
+> live broadcast leak survived the original vectors and the whole suite.
 
 ### 1.3 Canonical `conversationId`
 
-A `conversation` audience value is the canonical two-party id: the two
+A conversation audience value — and a `MODEL_SIGNAL.contextId` — is the
+canonical two-party id: the two
 participants' userIds sorted lexicographically and joined with a single
 underscore, `"userIdA_userIdB"`. Splitting on `_` MUST yield exactly two
 non-empty parts. This form makes a 1:1 conversation address the same regardless
@@ -257,46 +283,56 @@ direction.
 ### 1.4 Error codes
 
 Fail-loud outcomes are identified by a stable `code` string (not message text),
-so vectors and cross-platform error handling can match on it.
+so cross-platform error handling can match on it.
 
-| Code | Raised when |
-|---|---|
-| `DIRECT_ROUTING_UNRESOLVED` | A `recipient`/`conversation` audience cannot be resolved (see §1.2). |
+| Code | Raised when | Raised by |
+|---|---|---|
+| `DIRECT_ROUTING_UNRESOLVED` | A 1:1 audience cannot be resolved (see §1.2). | The app (`obscura-pix/src/domain/audience.ts`). Both kits still declare the code on their error enum, where it is now **dead** — a follow-up, kept in step across the two kits because the bridge exposes it to JS. |
 
 ---
 
-## 2. Merge (CRDT resolution)
+## 2. Merge (conflict resolution)
 
-> **SUPERSEDED — pending removal.** The app's five models need `APPEND` (dedupe
-> by `id`) and `REPLACE` (higher `timestamp` wins), declared per message on the
-> wire. That is a merge *rule*, not a CRDT engine, and it is small enough that
-> two implementations cannot meaningfully diverge. The generality below — GSet
-> union semantics, tombstone ordering, the `authorDeviceId` tie-break — serves
-> concurrent multi-writer editing the app does not do. (`deleteEntry` has no
-> caller in the app at all, so §2.3 is dead on arrival.) `conformance/merge.json`
-> retires with it.
+> **REWRITTEN 2026-07-31 — an APP obligation now, like §1.** The CRDT *engine* is
+> deleted from both kits (Kotlin #56, Swift #24). The *rules* are not: they are
+> implemented once, in `obscura-pix/src/domain/merge.ts`, as `APPEND` and
+> `REPLACE` declared per message on the wire rather than read from a schema.
 >
-> §2.4 (the future-timestamp clamp) **survives** — it applies to any peer-supplied
-> timestamp, and belongs on the `REPLACE` rule and the device-announce guard.
+> §2.1 and §2.2 keep their numbers and their content, renamed to the rule names
+> the app and the wire actually use. What went with the engine is the generality
+> around them — the query layer, observation, the tombstone ordering of §2.3 —
+> which served concurrent multi-writer editing the app does not do.
+>
+> **§2.3 is DELETED.** `deleteEntry` had no caller in the app, both kits now hard
+> delete, and a tombstone ordering nothing produced was dead on arrival.
+>
+> §2.4 (the future-timestamp clamp) **survives unchanged** and keeps its number:
+> both kits and pix cite "SPEC §2.4" by name.
+>
+> `conformance/merge.json` was deleted 2026-07-31. It lives on as
+> `obscura-pix/src/domain/__fixtures__/merge.json`, executed by
+> `src/domain/__tests__/merge.vectors.test.ts` — pix vendored its own copy first,
+> which `RESET.md` made a precondition of the deletion.
 
-*Vectors: [`conformance/merge.json`](conformance/merge.json).*
+*Vectors: none — `merge.json` was deleted 2026-07-31.*
 
-A model's `sync` strategy decides how concurrent writes to the same entry `id`
+A message's merge rule decides how concurrent writes to the same entry `id`
 reconcile. Merge MUST be **convergent**: applying the same set of writes in any
-arrival order yields the identical resolved state. `merge.json` enforces this by
-replaying each case in multiple `applyOrders`.
+arrival order yields the identical resolved state. This is why the vectors
+replayed each case in multiple `applyOrders`, and why the tie-break in §2.2 is
+mandatory rather than cosmetic.
 
-### 2.1 GSet (grow-only set) — `sync: "gset"`
+### 2.1 `APPEND` (first write wins) — formerly GSet
 
 Union keyed by entry `id`. The first write seen for an `id` is kept; later
-writes with the same `id` are ignored (idempotent). GSet entries are immutable
-by construction (ids are unique: `model_timestamp_random`), so a repeated `id`
-carries identical content and order cannot matter.
+writes with the same `id` are ignored (idempotent). `APPEND` entries are
+immutable by construction (ids are unique: `model_timestamp_random`), so a
+repeated `id` carries identical content and order cannot matter.
 
-### 2.2 LWW (last-writer-wins map) — `sync: "lww"`
+### 2.2 `REPLACE` (last writer wins) — formerly LWW
 
 Each `id` resolves to the winner under a **total order on
-`(timestamp, authorDeviceId)`**:
+`(sentAt, authorDeviceId)`** (`timestamp` on the wire):
 
 1. Strictly-greater `timestamp` wins.
 2. On an **equal** `timestamp`, the lexicographically-**higher** `authorDeviceId`
@@ -308,15 +344,15 @@ The `authorDeviceId` tie-break (2) is mandatory: without it, an equal-timestamp
 conflict resolves to "whichever write arrived first", so two devices that
 receive the two writes in different orders converge to **different** states and
 never reconcile. That silently corrupts state and is invisible in single-device
-testing — hence it is pinned by a multi-order vector.
+testing — hence it is pinned by a multi-order vector, now
+`obscura-pix/src/domain/__tests__/merge.vectors.test.ts`.
 
-### 2.3 Tombstones (delete)
+> **`authorDeviceId` MUST come from the decrypting session, never from a payload
+> field** (§0.10 rule 4). A peer-asserted value turns the tie-break into a way to
+> win every equal-timestamp conflict on demand. This was a live defect: the
+> deleted ORM took it from the payload, and it silently corrupted merge metadata
+> for as long as it ran alongside the replacement.
 
-A delete is a normal LWW write whose `data` is `{ "_deleted": true }`, stamped
-at the deleting device's current time. Because it is an ordinary write, it
-participates in the §2.2 total order: a newer write (edit or delete) wins, and a
-stale write can never resurrect a newer tombstone. `getAll`/`size` exclude
-tombstones; `get` returns them.
 
 ### 2.4 Future-timestamp clamp
 
@@ -389,71 +425,20 @@ first.** (Historically `ModelSync` carried a `signature` field — a keyless
 
 ---
 
-## 4. Model config (schema parsing)
-
-> **SUPERSEDED by §0.4 — pending removal.** A kit does not parse an application
-> schema, because a kit does not act on application fields. The schema is the
-> app's, and stays in the app. `conformance/schema.json` retires with this
-> section. (It was never adopted by Swift, which is a fair signal of how much it
-> was worth.)
-
-*Vectors: [`conformance/schema.json`](conformance/schema.json).*
-
-Apps declare their models in a shared config (the `schema.ts` map). Each kit
-parses that config into its internal model definition. Because each kit parses
-independently, they can **drift** — the original bug was one kit silently
-ignoring `audience`, so a private model defaulted to a broadcast. This section
-pins the parse so all kits agree, and requires it to **fail loud** on an invalid
-definition rather than mis-parse.
-
-A model config is `{ fields, sync?, ttl?, audience? }`:
-
-### 4.1 `fields`
-
-A map of field name → type string. The type is a base type optionally suffixed
-with `?` to mark it **optional (nullable)**:
-
-| Declared | base type | optional |
-|---|---|---|
-| `"string"` | string | no |
-| `"string?"` | string | yes |
-| `"number"` / `"boolean"` / `"timestamp"` | (as named) | no |
-
-Base type MUST be one of `string`, `number`, `boolean`, `timestamp`. Any other
-base type is invalid (§4.5).
-
-### 4.2 `sync`
-
-`"gset"` or `"lww"` (see §2). **Absent → `gset`** (the default). Any other value
-is invalid.
-
-### 4.3 `ttl`
-
-Optional duration string (e.g. `"24h"`). Absent/null → no TTL.
-
-### 4.4 `audience`
-
-The delivery scope object (see §1.1): `{"kind": ...}`, optionally with `field`.
-**Absent → `friends`** (the default). `recipient`/`conversation` REQUIRE a
-non-empty `field`; `self`/`friends` take none. An unknown `kind`, or a
-`recipient`/`conversation` missing its `field`, is invalid.
-
-### 4.5 Fail-loud
-
-Any invalid definition — unknown `sync`, unknown field base type, unknown
-`audience` kind, or a `recipient`/`conversation` audience without a non-empty
-`field` — MUST raise `INVALID_SCHEMA` at define time and define no model. Failing
-loud at definition is what stops a mis-parsed config from silently degrading a
-model's confidentiality at runtime.
-
-| Code | Raised when |
-|---|---|
-| `INVALID_SCHEMA` | A model definition is invalid (see above). |
-
----
 
 ## Changelog
 
+- **v3** (2026-07-31, Phase 3 "the reset") — the deleted-engine sections are settled rather
+  than left SUPERSEDED. **§1.1 and §§2.3, 4 are removed**: schema-driven audience resolution,
+  tombstone ordering and model-config parsing all described things a kit does not do, and none had
+  a successor. **§1.2–1.4 and §2.1–2.2 are rewritten, keeping their numbers**, because their rules
+  did not stop being true when they changed owner — they are implemented in
+  `obscura-pix/src/domain/{audience,merge}.ts`, plus the kits' ephemeral-signal path for §1.2. §2.1
+  and §2.2 are renamed to the `APPEND`/`REPLACE` rule names the wire actually carries. §2.4 is
+  unchanged. Numbers are deliberately NOT compacted — §1.2, §2.2 and §2.4 are cited by name in both
+  kits and in pix, and renumbering would silently redirect a live citation. `conformance/routing.json`,
+  `merge.json` and `schema.json` deleted; `wire.json` is the only vector left, because encoding is
+  the one thing two kits are forced to implement twice.
 - **v2** — §0 **The kit boundary** (what a kit is, the proto-is-the-boundary rule,
   MUST/MUST NOT lists, sender identity from the friend graph) — governs every other
   section. §0.9 **Receive: persist-then-ack** (an ACK is a DELETE; decrypt → persist
