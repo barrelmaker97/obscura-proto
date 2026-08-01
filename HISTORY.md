@@ -77,10 +77,13 @@ These were open when the planning documents were retired, and are not recorded a
 
 - **Nothing expires.** TTL went with the engine and has not been rebuilt, on either platform.
   Stories never expire, for author or recipient.
-- **`FRIEND_SYNC` was deleted, not fixed.** `FriendSync` carries no `user_id`, so both kits keyed the
-  synced friend on the sender's own id and wrote the user into their own friends list. A second
-  device therefore does not learn about friends added later; `DEVICE_LINK_APPROVAL` still carries the
-  friends export at link time. Building multi-device friend sync properly needs a proto field.
+- **`FRIEND_SYNC` was deleted from both kits and DEPRECATED on the wire, not removed from it.**
+  `FriendSync` carries no `user_id`, so both kits keyed the synced friend on the sender's own id and
+  wrote the user into their own friends list. Neither kit now sends or handles it. The field stays
+  declared so an older peer's message is still a *known* arm — classified UNIMPLEMENTED, dropped and
+  acked loudly — rather than an unknown one inboxed as opaque bytes. Consequence: a second device
+  does not learn about friends added later; `DEVICE_LINK_APPROVAL` still carries the friends export
+  at link time. Rebuilding it properly needs a `user_id` field and a new number.
 - **`ProcessedCounts` hard-codes `"pix"` and `"directMessage"`** in kit source, which §0.4 forbids.
   Both kits, identically. The fix changes a bridge-facing type on both platforms at once.
 - **Swift sends `DEVICE_LINK_APPROVAL` but cannot receive one**, so a newly-linked device discards

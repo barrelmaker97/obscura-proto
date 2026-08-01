@@ -45,16 +45,6 @@ message ClientMessage {
   reserved 1, 11, 12, 15, 16;
   reserved "type";
 
-  // 51 was `FriendSync friend_sync`, removed 2026-08-01. It could not work: the message carried
-  // no `user_id`, so both kits keyed the synced friend on the SENDER's id — which their own
-  // "is this from my device" guard had just proven was the local user. Every befriend on a
-  // multi-device account wrote the user into their own friends list, and from there into
-  // getAccepted() and every fan-out. obscura-pix never read it.
-  //
-  // Multi-device friend sync is still worth having. Rebuilding it needs a `user_id` field and a
-  // NEW field number — do not recycle 51, and do not restore this message as it was.
-  reserved 51;
-  reserved "friend_sync";
 
   uint64 timestamp = 2;
 
@@ -86,6 +76,7 @@ message ClientMessage {
 
     // Application data
     ModelSync model_sync = 50;
+    FriendSync friend_sync = 51 [deprecated = true];  // DEAD — see below. Do not send.
     ModelSignal model_signal = 52;
   }
 }
@@ -210,6 +201,34 @@ message SentSync {
   string message_id = 2;            // Unique message ID
   uint64 timestamp = 3;             // When the message was sent
   bytes content = 4;                // The message content
+}
+
+// DEPRECATED 2026-08-01, and DEAD: no kit sends it, no kit handles it.
+//
+// It could not work. The message carries no `user_id`, so a receiver had nothing to key the friend
+// record on and both kits used the SENDER's id — which their own "is this from my own device" guard
+// had just proven was the local user. Every befriend on a multi-device account therefore wrote the
+// user into their OWN friends list on the other device, and from there into `getAccepted()` and
+// every fan-out. obscura-pix never read it.
+//
+// Kept on the wire rather than deleted, deliberately. An older peer may still SEND one, and a
+// declared-but-deprecated arm is classified UNIMPLEMENTED by both kits and dropped-and-acked
+// loudly. Deleting the field instead would make those messages an UNKNOWN arm — inboxed as opaque
+// bytes for the app to discard by `kind`, which is a worse and quieter path for a message we
+// already know is junk. (`buf breaking` rejected the deletion, and it was right to.)
+//
+// To finish the removal: confirm no deployed build sends one, then delete the field and this
+// message, add `reserved 51` and `reserved "friend_sync"`, and drop the classification entries in
+// both kits' PayloadClass. Multi-device friend sync is still worth building — it needs a `user_id`
+// field and a NEW number. Do not recycle 51.
+message FriendSync {
+  option deprecated = true;
+
+  string username = 1;              // Friend's username
+  string action = 2;                // "add" or "remove"
+  string status = 3;                // Friend status (pending, accepted)
+  repeated DeviceInfo devices = 4;  // Friend's devices (for fan-out)
+  uint64 timestamp = 5;             // When the change occurred
 }
 
 // =============================================================================

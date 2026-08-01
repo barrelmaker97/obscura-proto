@@ -940,7 +940,7 @@ re-arms the cross-repo toolchain-drift check the pin had been suppressing.
   `device_recovery_announce` keeps its arm with the handler deferred.
 
   > **NOT EXECUTED, and two of the six are not safe as described.** `client.proto` still declares
-  > all 18 arms; only `friend_sync` (51) has been removed, for unrelated reasons (`HISTORY.md`).
+  > all 18 arms; `friend_sync` (51) is deprecated-in-place for unrelated reasons (`HISTORY.md`), not removed.
   > Before reserving the rest:
   >
   > - **`content_reference` is RECEIVED and parsed.** `KIT_API` §4.3 classified it sender-only, but
