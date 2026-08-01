@@ -203,24 +203,10 @@ message SentSync {
   bytes content = 4;                // The message content
 }
 
-// DEPRECATED 2026-08-01, and DEAD: no kit sends it, no kit handles it.
-//
-// It could not work. The message carries no `user_id`, so a receiver had nothing to key the friend
-// record on and both kits used the SENDER's id — which their own "is this from my own device" guard
-// had just proven was the local user. Every befriend on a multi-device account therefore wrote the
-// user into their OWN friends list on the other device, and from there into `getAccepted()` and
-// every fan-out. obscura-pix never read it.
-//
-// Kept on the wire rather than deleted, deliberately. An older peer may still SEND one, and a
-// declared-but-deprecated arm is classified UNIMPLEMENTED by both kits and dropped-and-acked
-// loudly. Deleting the field instead would make those messages an UNKNOWN arm — inboxed as opaque
-// bytes for the app to discard by `kind`, which is a worse and quieter path for a message we
-// already know is junk. (`buf breaking` rejected the deletion, and it was right to.)
-//
-// To finish the removal: confirm no deployed build sends one, then delete the field and this
-// message, add `reserved 51` and `reserved "friend_sync"`, and drop the classification entries in
-// both kits' PayloadClass. Multi-device friend sync is still worth building — it needs a `user_id`
-// field and a NEW number. Do not recycle 51.
+// Deprecated and unsupported by both kits. The message lacks the friend user id
+// required to apply it safely. Older peers may still send field 51, so receivers
+// diagnose, drop, and acknowledge it rather than treating it as an unknown app
+// payload. Any replacement needs an explicit user_id and a new field number.
 message FriendSync {
   option deprecated = true;
 

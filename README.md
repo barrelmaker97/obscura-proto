@@ -1,9 +1,8 @@
 # obscura-proto
 
-The shared contract for Obscura: the Protocol Buffer schemas plus the
-language-neutral conformance vectors that every Obscura component builds
-against. This repo is the single source of truth, consumed as a git submodule
-by the server and every client kit.
+The shared contract for Obscura: Protocol Buffer schemas, normative behavior,
+and language-neutral wire-encoding vectors. This repo is consumed as a git
+submodule by the server and client kits.
 
 ## Layers
 
@@ -14,11 +13,11 @@ and pins the third (behavior) with prose + vectors.
 |---|---|---|
 | **Transport** | [`obscura/v1/obscura.proto`](obscura/v1/obscura.proto) | server ⇄ kits: the envelope the server routes. Its encrypted `content` is opaque to the server. |
 | **Content** | [`obscura/client/v1/client.proto`](obscura/client/v1/client.proto) | kit ⇄ kit: the E2E payload *inside* `content`. The server never parses it. |
-| **Semantics** | [`SPEC.md`](SPEC.md) + [`conformance/`](conformance/) | how kits **behave**: routing, CRDT merge, wire mapping, schema parsing. |
+| **Semantics** | [`SPEC.md`](SPEC.md), [`KIT_API.md`](KIT_API.md), and [`conformance/`](conformance/) | The app/kit boundary, receive durability, routing, merge, and wire mapping. |
 
-The protos pin the **shape**; `SPEC.md` and the vectors pin the **behavior**.
-Where a rule is testable, the vector is the authority and `SPEC.md` explains
-*why*.
+The protos pin the **shape**. `SPEC.md` and `KIT_API.md` define behavior;
+`wire.json` is the executable cross-kit encoding contract. App-owned routing
+and merge are implemented and tested once in `obscura-pix`.
 
 ## Package naming
 
@@ -41,12 +40,13 @@ new layer name.
 | `obscura-server` | zero-knowledge relay | transport |
 | `ObscuraKit-Kotlin` | Android kit | transport + content + semantics |
 | `ObscuraKit-swift` | iOS/macOS kit | transport + content + semantics |
+| `obscura-pix` | React Native application | app-owned routing, merge, and payload semantics |
 | `obscura-client-web` | throwaway PoC (non-shipping) | — |
 
-Each shipping consumer pins this repo as a git submodule and generates code from
-the `.proto` files; the kits additionally run the behavior (semantics) vectors in
-their own test suites. `obscura-client-web` is a proof-of-concept and is **not** a
-normative conformance target.
+Each shipping protocol consumer pins this repo as a git submodule and generates
+code from the `.proto` files; the kits additionally run the wire vectors in
+their own test suites. `obscura-client-web` is a proof-of-concept and is
+**not** a normative conformance target.
 
 ## Working here
 
@@ -60,7 +60,7 @@ normative conformance target.
   (behavior). Each consumer adopts by bumping its `proto` submodule in a PR —
   that PR's build/conformance suite is the gate. A breaking change to a
   client-only layer means all clients ship together. See
-  [`conformance/README.md`](conformance/README.md#enforcement-ci).
+  [`conformance/README.md`](conformance/README.md#enforcement).
 
 ## Layout
 
@@ -69,9 +69,11 @@ obscura/
   v1/obscura.proto          # transport layer (server ⇄ kits)
   client/v1/client.proto    # client content (kit ⇄ kit)
 conformance/
-  *.json                    # behavior vectors
+  wire.json                 # cross-kit encoding vectors
   validate.py               # upstream well-formedness gate
-  README.md                 # vector formats + rationale
+  README.md                 # vector contract
 SPEC.md                     # behavior (semantics) prose contract
+KIT_API.md                  # kit/application boundary
+HISTORY.md                  # non-normative migration record
 buf.yaml                    # lint STANDARD + breaking FILE
 ```

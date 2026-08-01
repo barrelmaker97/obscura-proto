@@ -1,4 +1,8 @@
-# History — what happened and why
+# Obscura Protocol History
+
+> **Non-normative.** This file records completed migrations, audits, and
+> superseded behavior. Use `SPEC.md`, `KIT_API.md`, and `client.proto` for the
+> current contract.
 
 `PLAN.md` (887 lines) and `RESET.md` (354 lines) were the working documents for Phases 1–3. Both
 were **plans**, both are **done**, and by 2026-08-01 both had become actively misleading: their
