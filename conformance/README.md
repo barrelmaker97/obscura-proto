@@ -22,125 +22,33 @@ forces every kit to prove it still conforms.
 
 | File | Behavior class | Consumed by | Status |
 |---|---|---|---|
-| `wire.json`    | Wire ↔ app mappings + `ModelSync` round-trip         | Kotlin + Swift | **active** |
-| `routing.json` | Delivery targeting (audience → recipients, fail-loud) | Kotlin + Swift | **retiring** — see [`../SPEC.md`](../SPEC.md) §0.4 |
-| `merge.json`   | CRDT merge (GSet union, LWW resolution)              | Kotlin + Swift | **retiring** — see [`../SPEC.md`](../SPEC.md) §2 |
-| `schema.json`  | Model-config parsing (fields/sync/ttl/audience)     | Kotlin only | **retiring** — see [`../SPEC.md`](../SPEC.md) §4 |
+| `wire.json`    | Wire ↔ app mappings + `ModelSync` round-trip | Kotlin + Swift | **active — the only one left** |
 
-> **Three of these four vector classes are being deleted, and it is worth understanding why —
-> because the mechanism is sound and the mistake was upstream of it.**
+> **`routing.json`, `merge.json` and `schema.json` were DELETED (2026-07-31, `RESET.md` §10 step
+> 4), and it is worth understanding why — because the mechanism is sound and the mistake was
+> upstream of it.**
+>
+> Where they went, so this is not a dead end for anyone following a citation:
+>
+> - `routing.json` — its five leak guards are transcribed verbatim into
+>   `obscura-pix/src/domain/__tests__/audience.guards.test.ts`, run against
+>   `src/domain/audience.ts`. `RESET.md` made that transcription a precondition of this deletion.
+> - `merge.json` — vendored to `obscura-pix/src/domain/__fixtures__/merge.json` and executed by
+>   `src/domain/__tests__/merge.vectors.test.ts` against `src/domain/merge.ts`. pix reads its OWN
+>   copy, deliberately: the handover had to be complete before the original could go.
+> - `schema.json` — no successor, and it never had a second implementation. Swift never adopted it,
+>   which was a fair signal of its value; the kits do not parse application schemas at all now
+>   (`SPEC.md` §0.4).
 >
 > These fixtures exist to keep two hand-written implementations of the same logic in agreement.
 > That is a good solution to a problem the project should not have had: routing, merge, and
 > schema parsing were implemented *twice*, in two kits, to serve five flat models in one app.
-> Under [`SPEC.md` §0](../SPEC.md) that logic moves to the app, where it exists once — so there
-> is nothing left for these vectors to police. `wire.json` survives precisely because encoding
+> Under [`SPEC.md` §0](../SPEC.md) that logic moved to the app, where it exists once — so there
+> is nothing left for those vectors to police. `wire.json` survives precisely because encoding
 > *must* be implemented twice: it is the one thing two kits genuinely have to agree on.
 >
 > The lesson to keep: a conformance suite is the right tool for logic you are *forced* to
 > duplicate, and a warning sign for logic you merely *chose* to duplicate.
-
-## `routing.json`
-
-Pins which recipients an entry MUST reach given a model's schema config, or
-the fail-loud error a kit MUST raise instead of misrouting.
-
-```
-{
-  "version": 1,
-  "kind": "routing",
-  "topology": {
-    "selfUserId": "uMe",
-    "friends": [ { "userId", "username", "status" }, ... ]
-  },
-  "cases": [
-    {
-      "name":   "<human-readable, shown as the test name>",
-      "schema": { "model"?, "sync", "ttl"?, "audience"? },   // a model-config
-      "entry":  { "id", "data": { ... } },                   // the write
-      "expect": { "recipients": ["uMe", ...] }               // OR:
-      "expect": { "error": "DIRECT_ROUTING_UNRESOLVED" }
-    }
-  ]
-}
-```
-
-**Design decisions:**
-
-- **`expect.recipients` is a set of userIds, not devices.** The behavior that
-  differs between kits is *audience → who*. Expanding a recipient to their
-  devices is mechanical (a property of the friend/device graph) and is
-  deliberately out of scope. `selfUserId` always appears in `recipients`
-  because a write always reaches the author's own other devices.
-- **`expect` is either `recipients` or `error`.** Fail-loud is a first-class
-  outcome. When `error` is expected, the kit MUST raise it AND send nothing —
-  a misrouted 1:1 payload is a confidentiality breach, so refusing to send is
-  the safe failure.
-- `schema.audience` mirrors the shared `schema.ts` / kit `Audience`:
-  `{"kind":"friends"}` (or omitted), `{"kind":"self"}`,
-  `{"kind":"recipient","field":"<usernameField>"}`,
-  `{"kind":"conversation","field":"<convIdField>"}`.
-
-### Consuming it
-
-Each kit drives its real production code per case. The Kotlin harness (the first
-implemented) maps the topology so `deviceId == userId` (one device per user),
-which makes the recorded target set equal the recipient-userId set directly,
-then drives the real `SyncManager` per case:
-
-```kotlin
-val vectors = JSONObject(File("../proto/conformance/routing.json").readText())
-// build ModelConfig via the SAME parse entry points as production
-//   (SyncStrategy.fromWire / Audience.fromWire) so the parser is guarded too,
-// call sm.broadcast(model, entry), then assert recorded == expect.recipients
-//   (or that ObscuraError.code == expect.error and nothing was recorded).
-```
-
-Consumers: Kotlin `RoutingConformanceTest.kt`, Swift `RoutingConformanceTests.swift`.
-
-## `merge.json`
-
-Pins CRDT merge resolution. Each case applies a list of `ops` (incoming syncs)
-and asserts the resolved state; cases with multiple `applyOrders` assert
-**convergence** — the same ops in different arrival orders MUST resolve
-identically.
-
-```
-{
-  "version": 1,
-  "kind": "merge",
-  "cases": [
-    {
-      "name": "<shown as the test name, suffixed with [order]>",
-      "sync": "gset" | "lww",
-      "ops": [ { "id", "ts", "authorDeviceId", "data": { ... } }, ... ],
-      "applyOrders": ["forward", "reverse"],   // optional, default ["forward"]
-      "expect": {
-        "entries": [
-          { "id", "authorDeviceId"?, "data"?, "deleted"? },   // assert only the present fields
-          ...
-        ]
-      }
-    }
-  ]
-}
-```
-
-**Design decisions:**
-
-- **Convergence is the headline property.** `applyOrders` replays the same ops
-  forward and reversed; both must match `expect`. This is what catches a
-  non-deterministic tie-break (which passes single-order tests but corrupts
-  state across replicas).
-- **Ops are applied via the merge (incoming-sync) path**, since that is where
-  reconciliation happens and where bugs hide.
-- **`expect.entries` asserts only the fields present** per entry: `data` and/or
-  `authorDeviceId` for the winner, or `deleted: true` for a tombstone.
-- **The future-timestamp clamp is intentionally NOT here** — it is relative to
-  wall-clock `now`, which a static fixture cannot pin. Each kit unit-tests it
-  natively. See SPEC §2.4.
-
-Consumers: Kotlin `MergeConformanceTest.kt`, Swift `MergeConformanceTests.swift`.
 
 ## `wire.json`
 
@@ -170,50 +78,6 @@ Pins the wire ↔ app-facing-form mappings for the `ClientMessage.payload` oneof
   bytes. So exact-byte assertions would over-constrain the wire for no consumer.
 
 Consumers: Kotlin `WireConformanceTest.kt`, Swift `WireConformanceTests.swift`.
-
-## `schema.json`
-
-Pins how one model's raw config (a value in the shared `schema.ts` map) is parsed
-into the internal model definition, or the fail-loud `INVALID_SCHEMA` error for an
-invalid definition. Directly guards the divergent-parsing bug class (a kit
-ignoring `audience` so a private model broadcasts).
-
-```
-{
-  "version": 1,
-  "kind": "schema",
-  "cases": [
-    {
-      "name": "<shown as the test name>",
-      "config": { "fields": { "<name>": "<type>" }, "sync"?, "ttl"?, "audience"? },
-      "expect": {
-        "sync": "gset" | "lww",
-        "ttl": "24h" | null,
-        "audience": { "kind": "friends|self|recipient|conversation", "field": "..."|null },
-        "fields": { "<name>": { "type": "string|number|boolean|timestamp", "optional": bool } }
-      }
-      // OR, for an invalid definition:
-      "expect": { "error": "INVALID_SCHEMA" }
-    }
-  ]
-}
-```
-
-**Design decisions:**
-
-- **Consumed through the real parse entry point** (Kotlin `ModelConfig.fromWire`,
-  which `defineModelsFromJson` also calls) — so the vector guards production
-  parsing, not a reimplementation.
-- **Field type is normalized** to `{ type, optional }`: the `?` suffix means
-  optional/nullable; base type ∈ {string, number, boolean, timestamp}.
-- **Defaults are pinned:** `sync` absent → `gset`; `audience` absent → `friends`;
-  `ttl` absent → null.
-- **`error: "INVALID_SCHEMA"`** asserts fail-loud parsing (unknown sync / field
-  type / audience kind, or a `recipient`/`conversation` audience missing its
-  `field`) — see SPEC §4.5.
-
-Consumer: Kotlin `SchemaConformanceTest.kt` (Swift schema consumer pending — its
-`defineModelsFromJson` does not yet surface the `audience` field).
 
 ## Adding a case
 

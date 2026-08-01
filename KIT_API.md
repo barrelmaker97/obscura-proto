@@ -866,12 +866,22 @@ local SPM). So "Kotlin ships first" would break iOS for the whole duration of th
    2026-07-28**: inbox (Kotlin #49, Swift #18), `send` (Kotlin #52, Swift #20);
 3. pix switches to the new API — **DONE 2026-07-28** (pix #64, #65). Every ORM call site is gone
    from pix's production code;
-4. the old surface is deleted, per kit — **NOT STARTED.** This is `RESET.md`.
+4. the old surface is deleted, per kit — **DONE 2026-07-31**: Kotlin #56, Swift #24. `RESET.md`
+   is the inventory. Both kits then dropped the ORM's *storage* as well (Kotlin #57, Swift #24's
+   `ObscuraSchema` v2), which is a separate step because deleting a table needs a migration.
 
 Pin kit commits in pix CI for the duration, so step 4 cannot strand an older pix commit.
-**Done and currently active**, pinned at `503ce22` (pix #63, bumped in #64). **Remove the pin after
-step 4 lands**, restoring the float — the comment block at the pin says so at the line that has to
-change.
+**Done, then REMOVED as designed** (pix #63 → #64 → unpinned in #68). The float is back, which
+re-arms the cross-repo toolchain-drift check the pin had been suppressing.
+
+> **The migration order held.** Every step landed in the order this section specifies, and the
+> ordering constraint it was built around — pix has one TypeScript surface for two platforms, so
+> "Kotlin ships first" would break iOS for the duration — never had to be tested, because the
+> deletion came last on both kits simultaneously. The one thing the order did NOT protect: step 4's
+> Swift half found that `ObscuraSchema.swift`'s own recorded procedure for dropping the ORM tables
+> would have **erased the database**, because `model_entries` is the app's entry store and
+> `inbox_rows` shares its `v1`. Ordering protects against stranding a consumer; it does not protect
+> against a wrong instruction written down at the time the plan was made.
 
 > **What steps 1–3 actually cost, recorded because the estimate was wrong in both directions.**
 >
@@ -888,7 +898,11 @@ change.
 > **The `routing.json` handover is COMPLETE (2026-07-28).** `RESET.md` requires pix to vendor the
 > five leak guards and have them passing *before* the vectors are deleted here. They are transcribed
 > verbatim in `obscura-pix/src/domain/__tests__/audience.guards.test.ts`, against
-> `src/domain/audience.ts`. The precondition on deleting `conformance/routing.json` is met.
+> `src/domain/audience.ts`. The precondition on deleting `conformance/routing.json` is met — and the
+> vector was duly **deleted 2026-07-31**, together with `merge.json` and `schema.json`. `wire.json`
+> is the only conformance vector left, which is the outcome `conformance/README.md` predicted: a
+> conformance suite is the right tool for logic you are *forced* to duplicate, and a warning sign
+> for logic you merely *chose* to duplicate. Encoding is the only thing two kits must implement twice.
 
 > **Status of that mitigation (checked 2026-07-25): NOT done, and two things about pix CI change how
 > much this plan can lean on it.**

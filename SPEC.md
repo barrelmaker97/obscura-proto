@@ -207,12 +207,20 @@ of that session's chain key, which only the sending device holds.
 
 ## 1. Routing (delivery targeting)
 
-> **SUPERSEDED by §0.4 — pending removal.** Recipient resolution moves to the
-> app; a kit no longer resolves an audience, so it cannot misroute. The rules
-> below describe the engine being deleted, and `conformance/routing.json`
-> retires with it. Retained only until the kits stop implementing them.
+> **SUPERSEDED by §0.4. The engine is deleted; this section is not, yet.**
+> Recipient resolution moved to the app (Kotlin #56, Swift #24), so a kit no
+> longer resolves an audience and cannot misroute. `conformance/routing.json`
+> was deleted with it — its five leak guards live in
+> `obscura-pix/src/domain/__tests__/audience.guards.test.ts`.
+>
+> **§1.2's fail-loud rule is still cited by live code in both kits** (the
+> ephemeral-signal path refuses a `contextId` that does not name exactly two
+> participants) and by `obscura-pix/src/domain/audience.ts`. So this section
+> cannot simply be deleted the way §4 can: the surviving rule needs a home in
+> §0.4 first. That is the remaining editorial step, and it is deliberately not
+> bundled with the vector deletion.
 
-*Vectors: [`conformance/routing.json`](conformance/routing.json).*
+*Vectors: none — `routing.json` was deleted 2026-07-31.*
 
 Every model declares an **audience** in its schema config that determines which
 recipients a write is delivered to. A kit MUST resolve the audience using only
@@ -277,9 +285,15 @@ so vectors and cross-platform error handling can match on it.
 > retires with it.
 >
 > §2.4 (the future-timestamp clamp) **survives** — it applies to any peer-supplied
-> timestamp, and belongs on the `REPLACE` rule and the device-announce guard.
+> timestamp, and belongs on the `REPLACE` rule and the device-announce guard. It
+> keeps its number: both kits and pix cite "SPEC §2.4" by name.
+>
+> `conformance/merge.json` was deleted 2026-07-31. It lives on as
+> `obscura-pix/src/domain/__fixtures__/merge.json`, executed by
+> `src/domain/__tests__/merge.vectors.test.ts` — pix vendored its own copy first,
+> which `RESET.md` made a precondition of the deletion.
 
-*Vectors: [`conformance/merge.json`](conformance/merge.json).*
+*Vectors: none — `merge.json` was deleted 2026-07-31.*
 
 A model's `sync` strategy decides how concurrent writes to the same entry `id`
 reconcile. Merge MUST be **convergent**: applying the same set of writes in any
@@ -396,8 +410,14 @@ first.** (Historically `ModelSync` carried a `signature` field — a keyless
 > app's, and stays in the app. `conformance/schema.json` retires with this
 > section. (It was never adopted by Swift, which is a fair signal of how much it
 > was worth.)
+>
+> `conformance/schema.json` was deleted 2026-07-31 with **no successor** — unlike
+> `routing.json` and `merge.json`, nothing needed to receive it. Neither kit
+> parses an application schema now; `defineModelsFromJson` is gone from both.
+> This section can be deleted outright whenever someone wants to; nothing cites
+> its subsections.
 
-*Vectors: [`conformance/schema.json`](conformance/schema.json).*
+*Vectors: none — `schema.json` was deleted 2026-07-31.*
 
 Apps declare their models in a shared config (the `schema.ts` map). Each kit
 parses that config into its internal model definition. Because each kit parses
