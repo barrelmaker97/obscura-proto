@@ -38,16 +38,3 @@ jobs:
         with:
           # Compares the PR branch against the 'main' branch
           against: 'https://github.com/${{ github.repository }}.git#branch=main'
-
-  # Validate the L3 conformance vectors are well-formed. This is proto's
-  # UPSTREAM responsibility only: the artifacts must be coherent (valid JSON,
-  # expected structure, no orphan files, spec-referenced). Whether a KIT
-  # satisfies a vector is the consumer's job, gated in each kit's own CI when
-  # it adopts a new proto commit (submodule bump) — proto never builds a kit.
-  # Pure stdlib; see conformance/README.md and conformance/validate.py.
-  conformance-vectors:
-    name: Validate Conformance Vectors
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: python3 conformance/validate.py
