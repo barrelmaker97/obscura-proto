@@ -84,7 +84,7 @@ message Envelope {
   // Envelope.source_service_id: a routing/attribution HINT, not a trust root. The
   // recipient authenticates the sender via the Signal session (identity key), and
   // takes the display name from its own friend graph — never by trusting this
-  // field or the payload. See SPEC.md §0.5.
+  // field or the payload. See TRANSPORT.md.
   bytes sender_id = 2;
 
   uint64 timestamp = 3; // Server-generated timestamp (ms) of when the message was received.

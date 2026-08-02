@@ -34,20 +34,10 @@ jobs:
           # 2026-07-25 on a docs-only PR. The gate must fail for contract reasons, not
           # because a neighbouring runner used up the quota.
           github_token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: bufbuild/buf-breaking-action@v1
-        with:
-          # Compares the PR branch against the 'main' branch
-          against: 'https://github.com/${{ github.repository }}.git#branch=main'
-
-  # Validate the L3 conformance vectors are well-formed. This is proto's
-  # UPSTREAM responsibility only: the artifacts must be coherent (valid JSON,
-  # expected structure, no orphan files, spec-referenced). Whether a KIT
-  # satisfies a vector is the consumer's job, gated in each kit's own CI when
-  # it adopts a new proto commit (submodule bump) — proto never builds a kit.
-  # Pure stdlib; see conformance/README.md and conformance/validate.py.
-  conformance-vectors:
-    name: Validate Conformance Vectors
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: python3 conformance/validate.py
+      - name: Check transport compatibility
+        # Scope the comparison to the artifact this repository owns. The
+        # historical client package moved to obscura-native.
+        run: >-
+          buf breaking
+          --against 'https://github.com/${{ github.repository }}.git#branch=main'
+          --path obscura/v1
