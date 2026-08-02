@@ -34,7 +34,10 @@ jobs:
           # 2026-07-25 on a docs-only PR. The gate must fail for contract reasons, not
           # because a neighbouring runner used up the quota.
           github_token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: bufbuild/buf-breaking-action@v1
-        with:
-          # Compares the PR branch against the 'main' branch
-          against: 'https://github.com/${{ github.repository }}.git#branch=main'
+      - name: Check transport compatibility
+        # Scope the comparison to the artifact this repository owns. The
+        # historical client package moved to obscura-native.
+        run: >-
+          buf breaking
+          --against 'https://github.com/${{ github.repository }}.git#branch=main'
+          --path obscura/v1
