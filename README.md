@@ -34,7 +34,7 @@ Run the existing CI gates:
 
 ```bash
 buf lint
-buf breaking --against '.git#branch=main'
+buf breaking --against '.git#branch=main' --path obscura/v1
 ```
 
 A breaking schema change requires a coordinated server/native migration.
